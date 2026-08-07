@@ -19,12 +19,12 @@ from cortex.cli import main
 from cortex.canonical import _native_path
 from cortex.core4 import (
     SimulatedCrash, _owned_scratch, bundle_identity, bundle_lock, config_compatible, load_artifact, markdown_links, sanitize_body,
-    state_paths, strict_json, tree_digest, validate_bundle,
+    persist_artifact, read_json_operand, state_paths, strict_json, tree_digest, validate_bundle,
 )
 from cortex.errors import CortexError
 from cortex.native import native_path
 from cortex.constants import FEATURE_IDS, PUBLIC_LEAF_ROUTES, SCHEMA_IDS
-from cortex.contracts import load_schema, make_envelope, validate_contract, validate_registry
+from cortex.contracts import load_schema, make_artifact, make_envelope, validate_contract, validate_registry
 
 
 def schema() -> dict:
@@ -159,6 +159,21 @@ def test_unsupported_link_context_publishes_no_proposal_or_plan(tmp_path: Path, 
     assert before==after and draft.read_bytes()==raw
 
 
+@pytest.mark.parametrize("sanitize",[False,True])
+def test_batch_source_structure_reports_one_ordered_issue_per_source_and_only_context(tmp_path: Path, capsys: pytest.CaptureFixture[str], sanitize: bool) -> None:
+    root=init_bundle(tmp_path,capsys);state=state_paths(root);drafts=[]
+    for name,body in (("container",b"- [x](missing.md)\n"),("malformed",b"broken [x](missing.md\n")):
+        draft=tmp_path/f"{name}.md";draft.write_bytes(b'---\ntype: ""\ntitle: '+name.title().encode()+b'\ndescription: ""\ntags: []\ntimestamp: "2026-08-06"\n---\n'+body);drafts.append(draft)
+    before={path.name for path in state.artifacts.iterdir() if path.name.startswith(("ingest-proposal@","mutation-plan@"))}
+    args=["--workspace",str(root),"build","ingest","--source",str(drafts[0]),"--source",str(drafts[1]),"--tag","project-elevate"]
+    if sanitize:args.append("--sanitize-links")
+    status,result=invoke(capsys,*args)
+    after={path.name for path in state.artifacts.iterdir() if path.name.startswith(("ingest-proposal@","mutation-plan@"))}
+    assert status==3 and [item["code"] for item in result["issues"]]==["unsupported_markdown_link_context","malformed_internal_link"]
+    assert [item["path"] for item in result["issues"]]==[str(path) for path in drafts]
+    assert len(result["artifacts"])==1 and result["artifacts"][0]["artifact_id"].startswith("ingest-context@") and before==after
+
+
 def test_duplicate_json_key_is_rejected(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root = init_bundle(tmp_path, capsys)
     duplicate = tmp_path / "duplicate.json"
@@ -195,6 +210,21 @@ def test_stdin_tty_and_size_guards() -> None:
     with pytest.raises(CortexError) as large:
         strict_json(b" " * (16 * 1024 * 1024 + 1), subject="test")
     assert large.value.code == "input_too_large"
+
+
+def test_internal_artifact_load_is_uncapped_but_caller_operand_and_filename_identity_are_strict(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root=init_bundle(tmp_path,capsys);state=state_paths(root)
+    issue={"rule_id":"large","code":"large","severity":"warning","message":"x"*(17*1024*1024),"path":None,"concept_id":None,"operation_id":None,"hint":None,"details":[]}
+    artifact=make_artifact("validation-report",{"bundle_identity":"0"*64,"validated_tree_digest":"1"*64,"outcome":"pass","counts":{"errors":0,"warnings":1},"issues":[issue]})
+    artifact_path=state.artifacts/f"{artifact['artifact_id']}.json";persist_artifact(state,artifact);assert os.path.getsize(native_path(artifact_path))>16*1024*1024
+    assert load_artifact(state,artifact["artifact_id"],"validation-report")["artifact_id"]==artifact["artifact_id"]
+    caller=tmp_path/"caller.json";caller.write_bytes(b" "*(16*1024*1024+1))
+    with pytest.raises(CortexError) as capped:read_json_operand(str(caller),subject="caller")
+    assert capped.value.code=="input_too_large"
+    wrong="validation-report@"+"f"*64
+    with open(native_path(artifact_path),"rb") as source,open(native_path(state.artifacts/f"{wrong}.json"),"wb") as destination:destination.write(source.read())
+    with pytest.raises(CortexError) as mismatch:load_artifact(state,wrong,"validation-report")
+    assert mismatch.value.code=="artifact_id_mismatch"
 
 
 def test_source_stdin_and_sanitize_apply_are_forbidden(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -243,6 +273,40 @@ def test_crlf_link_offsets_are_utf8_bytes() -> None:
     item = transformations[0]
     assert body[item["start_byte"]:item["end_byte"]].decode("utf-8") == item["before"]
     assert output == "前言\r\n日期\r\n".encode("utf-8")
+
+
+def test_multibyte_crlf_malformed_offsets_include_character_and_byte_coordinates() -> None:
+    text="前置\r\nbroken [[目标\r\n";body=text.encode("utf-8");start=text.index("[[")
+    with pytest.raises(CortexError) as caught:markdown_links(body)
+    assert caught.value.code=="malformed_internal_link"
+    assert caught.value.details=={"start":start,"line":2,"column":8,"start_byte":body.index(b"[[")}
+
+
+def test_utf8_prefix_is_lazy_for_success_and_built_once_for_offsets(monkeypatch: pytest.MonkeyPatch) -> None:
+    import cortex.core4 as core4
+    original=core4._utf8_boundary_prefix;calls=0
+    def counted(text: str) -> tuple[int,...]:
+        nonlocal calls;calls+=1;return original(text)
+    monkeypatch.setattr(core4,"_utf8_boundary_prefix",counted)
+    assert markdown_links(("无链接"*100_000+"\r\n").encode("utf-8"))==[] and calls==0
+    body="前置\r\n[日期](missing.md)\r\n".encode("utf-8");_,transformations,_=sanitize_body(body,"references/source.md",{"references/source.md"},True)
+    item=transformations[0];assert calls==1 and body[item["start_byte"]:item["end_byte"]].decode("utf-8")==item["before"]
+    calls=0;malformed="前置\r\nbroken [[目标\r\n".encode("utf-8")
+    with pytest.raises(CortexError) as caught:markdown_links(malformed)
+    assert calls==1 and caught.value.details["start_byte"]==malformed.index(b"[[")
+
+
+def test_candidate_driven_token_scan_checks_spans_only_at_bracket_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
+    import cortex.core4 as core4
+    original=core4._covering_span;calls=[]
+    def counted(spans: object,cursor: int,position: int) -> tuple[int,int|None]:
+        calls.append(position);return original(spans,cursor,position)  # type: ignore[arg-type]
+    monkeypatch.setattr(core4,"_covering_span",counted)
+    prefix="界"*200_000;body=(prefix+"[label](missing.md)\n").encode("utf-8")
+    tokens=markdown_links(body)
+    assert len(tokens)==1 and tokens[0].start==len(prefix) and calls==[len(prefix),len(prefix)]
+    output,transformations,_=sanitize_body(body,"references/source.md",{"references/source.md"},True)
+    assert body[transformations[0]["start_byte"]:transformations[0]["end_byte"]]==b"[label](missing.md)" and output.endswith(b"label\n")
 
 
 def test_same_batch_links_close_without_sanitization(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -301,6 +365,24 @@ def test_transaction_faults_resume_exactly(tmp_path: Path, capsys: pytest.Captur
     assert resumed["data"]["artifact_id"].startswith("verification-receipt@")
 
 
+def test_fresh_apply_reuses_stage_proof_with_live_identity_but_resumed_apply_validates_live(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    import cortex.core4 as core4
+    original=core4._validation_snapshot
+    def planned(case: Path,title: str) -> tuple[Path,str]:
+        root=init_bundle(case,capsys);draft=case/f"{title}.md";draft.write_text(f'---\ntype: ""\ntitle: {title}\ndescription: ""\ntags: []\ntimestamp: "2026-08-06"\n---\nBody.\n',encoding="utf-8")
+        _,result=invoke(capsys,"--workspace",str(root),"build","ingest","--source",str(draft),"--tag","project-elevate");return root,result["data"]["artifact_id"]
+    fresh_root,fresh_plan=planned(tmp_path/"fresh","FreshProof");calls=[]
+    def counted(path: Path):calls.append(Path(path));return original(path)
+    monkeypatch.setattr(core4,"_validation_snapshot",counted)
+    status,result=invoke(capsys,"--workspace",str(fresh_root),"build","ingest","--plan",fresh_plan,"--apply")
+    report_id=next(item["artifact_id"] for item in result["artifacts"] if item["artifact_id"].startswith("validation-report@"));report=load_artifact(state_paths(fresh_root),report_id,"validation-report")
+    assert status==0 and len(calls)==1 and calls[0]!=fresh_root and report["bundle_identity"]==state_paths(fresh_root).identity
+    monkeypatch.setattr(core4,"_validation_snapshot",original);resumed_root,resumed_plan=planned(tmp_path/"resumed","ResumeProof");monkeypatch.setattr(core4,"_validation_snapshot",counted);calls.clear()
+    monkeypatch.setenv("CORTEX_TEST_FAULT","after_stage");status,_=invoke(capsys,"--workspace",str(resumed_root),"build","ingest","--plan",resumed_plan,"--apply");assert status==6
+    monkeypatch.delenv("CORTEX_TEST_FAULT");calls.clear();status,_=invoke(capsys,"--workspace",str(resumed_root),"build","ingest","--plan",resumed_plan,"--apply")
+    assert status==0 and calls==[resumed_root]
+
+
 def test_transaction_backup_drift_is_ambiguous_and_preserved(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     root=init_bundle(tmp_path,capsys);draft=tmp_path/"draft.md";draft.write_text('---\ntype: ""\ntitle: Drift\ndescription: ""\ntags: []\ntimestamp: "2026-08-06"\n---\nBody.\n',encoding="utf-8")
     _,planned=invoke(capsys,"--workspace",str(root),"build","ingest","--source",str(draft),"--tag","project-elevate");plan_id=planned["data"]["artifact_id"]
@@ -310,6 +392,45 @@ def test_transaction_backup_drift_is_ambiguous_and_preserved(tmp_path: Path, cap
     status,result=invoke(capsys,"--workspace",str(root),"build","ingest","--plan",plan_id,"--apply")
     assert status==6 and result["issues"][0]["code"]=="recovery_ambiguous"
     assert os.path.exists(native_path(backup)) and os.path.exists(native_path(root))
+
+
+def test_publication_permission_before_rename_is_actionable_and_exactly_retryable(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    import cortex.core4 as core4
+    root=init_bundle(tmp_path,capsys);draft=tmp_path/"access.md";draft.write_text('---\ntype: ""\ntitle: Access\ndescription: ""\ntags: []\ntimestamp: "2026-08-06"\n---\nBody.\n',encoding="utf-8")
+    _,planned=invoke(capsys,"--workspace",str(root),"build","ingest","--source",str(draft),"--tag","project-elevate");plan=load_artifact(state_paths(root),planned["data"]["artifact_id"],"mutation-plan");state=state_paths(root);backup=state.backups/plan["digest"]/"bundle";stage=state.staging/plan["digest"]/"bundle"
+    original=core4.os.replace;blocked=0
+    def deny(source: object,destination: object) -> None:
+        nonlocal blocked
+        if str(destination)==native_path(backup):blocked+=1;raise PermissionError(13,"busy",str(source),str(destination))
+        original(source,destination)
+    monkeypatch.setattr(core4.os,"replace",deny)
+    status,result=invoke(capsys,"--workspace",str(root),"build","ingest","--plan",plan["artifact_id"],"--apply");issue=result["issues"][0];details={item["name"]:item["value"] for item in issue["details"]}
+    assert status==6 and issue["code"]=="publication_access_blocked" and issue["hint"] and blocked==1
+    assert details["phase"]=="park" and details["plan_id"]==plan["artifact_id"] and details["retry_same_plan"] is True
+    assert root.is_dir() and stage.is_dir() and not backup.exists()
+    monkeypatch.setattr(core4.os,"replace",original);status,result=invoke(capsys,"--workspace",str(root),"build","ingest","--plan",plan["artifact_id"],"--apply")
+    assert status==0 and result["data"]["artifact_id"].startswith("verification-receipt@")
+
+
+@pytest.mark.parametrize(("phase","target_call"),[("park",1),("publish",2)])
+def test_publication_barrier_failure_after_rename_effect_replays_barrier_without_ambiguity(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, phase: str, target_call: int) -> None:
+    import cortex.core4 as core4
+    root=init_bundle(tmp_path,capsys);draft=tmp_path/f"{phase}.md";draft.write_text(f'---\ntype: ""\ntitle: Barrier {phase}\ndescription: ""\ntags: []\ntimestamp: "2026-08-06"\n---\nBody.\n',encoding="utf-8")
+    _,planned=invoke(capsys,"--workspace",str(root),"build","ingest","--source",str(draft),"--tag","project-elevate");plan=load_artifact(state_paths(root),planned["data"]["artifact_id"],"mutation-plan");state=state_paths(root);backup=state.backups/plan["digest"]/"bundle";stage=state.staging/plan["digest"]/"bundle"
+    original=core4.fsync_dir;calls=0
+    def deny_parent(path: Path) -> None:
+        nonlocal calls
+        if Path(path)==root.parent:
+            calls+=1
+            if calls==target_call:raise PermissionError(13,"busy",str(path))
+        original(path)
+    monkeypatch.setattr(core4,"fsync_dir",deny_parent)
+    status,result=invoke(capsys,"--workspace",str(root),"build","ingest","--plan",plan["artifact_id"],"--apply");details={item["name"]:item["value"] for item in result["issues"][0]["details"]}
+    assert status==6 and result["issues"][0]["code"]=="publication_access_blocked" and details["phase"]==phase
+    if phase=="park":assert not root.exists() and backup.is_dir() and stage.is_dir()
+    else:assert root.is_dir() and backup.is_dir() and not stage.exists()
+    monkeypatch.setattr(core4,"fsync_dir",original);status,result=invoke(capsys,"--workspace",str(root),"build","ingest","--plan",plan["artifact_id"],"--apply")
+    assert status==0 and result["data"]["artifact_id"].startswith("verification-receipt@")
 
 
 @pytest.mark.parametrize("namespace_name",["staging","backups"])
@@ -481,6 +602,19 @@ def test_external_index_does_not_change_bundle(tmp_path: Path, capsys: pytest.Ca
     status,result=invoke(capsys,"--workspace",str(root),"manage","index")
     assert status==0 and tree_digest(root)==before and not (root/".cortex").exists()
     assert (state_paths(root).indexes/before/"index.json").is_file()
+
+
+def test_index_uses_one_validation_snapshot_for_report_destination_and_entries(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    import cortex.core4 as core4
+    root=init_bundle(tmp_path,capsys);reference=_ingest_named(root,tmp_path,capsys,"Snapshot");expected=tree_digest(root)
+    original=core4.tree_manifest;calls=0
+    def counted(*args: object,**kwargs: object) -> dict:
+        nonlocal calls;calls+=1;return original(*args,**kwargs)  # type: ignore[arg-type]
+    monkeypatch.setattr(core4,"tree_manifest",counted)
+    status,_=invoke(capsys,"--workspace",str(root),"manage","index")
+    payload=json.loads((state_paths(root).indexes/expected/"index.json").read_text(encoding="utf-8"))
+    assert status==0 and calls==1 and payload["bundle_tree_digest"]==expected
+    assert payload["references"]==[{"path":reference.relative_to(root).as_posix(),"digest":__import__("hashlib").sha256(reference.read_bytes()).hexdigest()}]
 
 
 def test_full_validation_blocks_noncanonical_and_unsupported_content(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -972,6 +1106,14 @@ def test_cross_line_explicit_link_signatures_fail_closed(body: bytes, kind: str)
     for enabled in (False,True):
         with pytest.raises(CortexError) as caught:sanitize_body(body,"references/source.md",{"references/source.md"},enabled)
         assert caught.value.code=="unsupported_markdown_link_context"
+
+
+def test_cross_line_signature_priority_precedes_global_source_position() -> None:
+    body=b"[inline\nlabel](missing.md)\n\n[[later\nwiki.md]]\n"
+    with pytest.raises(CortexError) as caught:markdown_links(body)
+    assert caught.value.code=="unsupported_markdown_link_context"
+    assert caught.value.details["reason"]=="cross_line" and caught.value.details["syntax_kind"]=="wiki"
+    assert caught.value.details["start_byte"]==body.index(b"[[later")
 
 
 def test_unsupported_context_reports_physical_utf8_byte_offset() -> None:

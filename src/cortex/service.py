@@ -14,7 +14,7 @@ from .commands import CommandOutcome
 from .constants import FEATURE_IDS, INDEX_BYTES, METHOD_ID, METHOD_VERSION, PUBLIC_LEAF_ROUTES, SCHEMA_IDS, TAG_SCHEMA_PATH
 from .contracts import artifact_ref, validate_contract
 from .core4 import (
-    _split_frontmatter, apply_plan, build_proposal, config_compatible, conflict_artifacts, context_for,
+    _split_frontmatter, _validation_snapshot, apply_plan, build_proposal, config_compatible, conflict_artifacts, context_for,
     ensure_state, error, load_artifact, load_tag_schema, make_plan, operation,
     path_preflight, persist_artifact, read_json_operand, render_canonical_reference, resolve_tag,
     rewrite_link_destinations, sanitize_body, state_paths, tag_schema_bytes,
@@ -37,7 +37,7 @@ def _default_schema() -> dict[str, Any]:
 
 
 def _issue(exc: CortexError) -> dict[str, Any]:
-    return {"rule_id":"service","code":exc.code,"severity":"error","message":str(exc),"path":exc.details.get("path"),"hint":None,"details":exc.details}
+    return {"rule_id":"service","code":exc.code,"severity":"error","message":str(exc),"path":exc.details.get("path"),"hint":exc.details.get("hint"),"details":exc.details}
 
 
 def _data(name: str, value: dict[str, Any], *, artifacts: Sequence[dict[str, Any]] = (), issues: Sequence[dict[str, Any]] = (), status: Status = Status.OK) -> CommandOutcome:
@@ -65,7 +65,10 @@ class CortexService:
             state = ensure_state(self.workspace)
             plan = load_artifact(state, args.plan, "mutation-plan")
             if plan["route"] != route: raise error("Plan belongs to another route", "plan_route_mismatch", Status.CONFLICT)
-            receipt, report, journal = apply_plan(self.workspace, plan)
+            try:receipt, report, journal = apply_plan(self.workspace, plan)
+            except CortexError as exc:
+                if exc.code=="publication_access_blocked":return CommandOutcome(None,None,[],[_issue(exc)],exc.status)
+                raise
             return _data("verification-receipt", receipt, artifacts=(receipt, report, journal))
         if args.apply: raise error("--apply requires an exact --plan id", "plan_required", Status.USAGE_ERROR)
         return None
@@ -185,9 +188,10 @@ class CortexService:
                 replacements.append(operation("replace",item["path"],base64.b64decode(publication["content_b64"]),existing,index=index))
             plan=make_plan(self.workspace,"build.ingest",creates+replacements,parents=(context,proposal,*current),base_digest=tree_digest(self.workspace),tag_digest=context["tag_schema_digest"])
             persist_artifact(state,plan);return _data("mutation-plan",plan,artifacts=(plan,))
+        reused_drafts=None
         if args.source:
             if args.context or args.proposal: raise error("Source and proposal modes cannot be combined", "invalid_ingest_mode", Status.USAGE_ERROR)
-            context,drafts=context_for(self.workspace,args.source,args.tag);state=ensure_state(self.workspace);persist_artifact(state,context)
+            context,reused_drafts=context_for(self.workspace,args.source,args.tag);state=ensure_state(self.workspace);persist_artifact(state,context)
             if any(source["unresolved_dimensions"] for source in context["sources"]): return _data("ingest-context",context,artifacts=(context,))
             proposal_input=None
         elif args.context:
@@ -195,7 +199,11 @@ class CortexService:
             if not args.proposal: raise error("--context requires --proposal FILE|-", "proposal_required", Status.USAGE_ERROR)
             context=load_artifact(state,args.context,"ingest-context"); proposal_input=read_json_operand(args.proposal,subject="proposal input")
         else: raise error("Ingest requires a source, context/proposal, conflict set, or plan", "invalid_ingest_mode", Status.USAGE_ERROR)
-        proposal,link_issues,_=build_proposal(self.workspace,context,proposal_input,args.sanitize_links);persist_artifact(state,proposal)
+        try:proposal,link_issues,_=build_proposal(self.workspace,context,proposal_input,args.sanitize_links,reused_drafts)
+        except CortexError as exc:
+            if exc.code=="source_structure_blocked":return CommandOutcome(None,None,[context],list(exc.details["issues"]),Status.VALIDATION_BLOCKED)
+            raise
+        persist_artifact(state,proposal)
         if link_issues and not args.sanitize_links:
             return CommandOutcome(None,None,[context,proposal],link_issues,Status.VALIDATION_BLOCKED)
         conflicts,operations=conflict_artifacts(self.workspace,context,proposal)
@@ -212,12 +220,12 @@ class CortexService:
         return _data("validation-report",report,artifacts=(report,),issues=issues)
 
     def manage_index(self,args:Any)->CommandOutcome:
-        self._require_bundle();state=ensure_state(self.workspace);digest=tree_digest(self.workspace);destination=state.indexes/digest/"index.json"
-        report,issues=validate_bundle(self.workspace);persist_artifact(state,report)
+        self._require_bundle();state=ensure_state(self.workspace);snapshot=_validation_snapshot(self.workspace);digest=snapshot.manifest["tree_digest"];destination=state.indexes/digest/"index.json"
+        report,issues=snapshot.report,list(snapshot.issues);persist_artifact(state,report)
         if report["outcome"]!="pass":return CommandOutcome(None,None,[report],issues,Status.VALIDATION_BLOCKED)
         path_preflight(self.workspace,state,[])
         entries=[]
-        for item in tree_manifest(self.workspace,exclude=(".cortex",))["entries"]:
+        for item in snapshot.manifest["entries"]:
             if item["path"].startswith("references/") and item["path"].endswith(".md"):entries.append({"path":item["path"],"digest":item["digest"]})
         from .core4 import atomic_bytes
         os.makedirs(native_path(destination.parent),exist_ok=True);atomic_bytes(destination,canonical_json_bytes({"bundle_tree_digest":digest,"references":entries})+b"\n")

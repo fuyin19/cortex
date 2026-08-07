@@ -49,8 +49,8 @@ def error(message: str, code: str, status: Status = Status.VALIDATION_BLOCKED, *
     return CortexError(message, status=status, code=code, details=dict(details))
 
 
-def strict_json(raw: bytes, *, subject: str) -> Any:
-    if len(raw) > _MAX_STDIN:
+def _strict_json_decode(raw: bytes, *, subject: str, limit: int | None) -> Any:
+    if limit is not None and len(raw) > limit:
         raise error(f"{subject} exceeds the 16 MiB input limit", "input_too_large", observed=len(raw), limit=_MAX_STDIN)
     if raw.startswith(b"\xef\xbb\xbf"):
         raise error(f"{subject} must not contain a UTF-8 BOM", "invalid_text_encoding")
@@ -70,6 +70,10 @@ def strict_json(raw: bytes, *, subject: str) -> Any:
         raise
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise error(f"{subject} is not strict UTF-8 JSON", "invalid_json") from exc
+
+
+def strict_json(raw: bytes, *, subject: str) -> Any:
+    return _strict_json_decode(raw, subject=subject, limit=_MAX_STDIN)
 
 
 def read_json_operand(value: str, stream: BinaryIO | None = None, *, subject: str) -> Any:
@@ -212,9 +216,11 @@ def load_artifact(state: StatePaths, artifact_id: str, expected: str | None = No
     if "/" in artifact_id or "\\" in artifact_id or ".." in artifact_id:
         raise error("Artifact operands accept content-addressed ids only", "artifact_id_required", Status.USAGE_ERROR)
     path = state.artifacts / f"{artifact_id}.json"
-    try: value = strict_json(open(_native_path(path), "rb").read(), subject="artifact")
+    try: value = _strict_json_decode(open(_native_path(path), "rb").read(), subject="artifact", limit=None)
     except OSError as exc: raise error("Artifact is unavailable", "artifact_unavailable", Status.CONFLICT, artifact_id=artifact_id) from exc
     if not isinstance(value, dict): raise error("Artifact is malformed", "invalid_artifact", Status.CONFLICT)
+    if value.get("artifact_id") != artifact_id:
+        raise error("Artifact filename and embedded identity differ", "artifact_id_mismatch", Status.CONFLICT, requested=artifact_id, embedded=value.get("artifact_id"))
     schema_name = str(value.get("schema_id", "")).split(":")[-2] if ":" in str(value.get("schema_id", "")) else ""
     if expected and not str(value.get("schema_id", "")).startswith(f"urn:cortex:schema:{expected}:"):
         if expected == "mutation-plan" and str(value.get("schema_id", "")).endswith(":1.0.0"):
@@ -512,9 +518,12 @@ def _parse_reference_title(line: str, cursor: int) -> int | None:
 def _reference_definitions(text: str, protected: Sequence[tuple[int,int]]) -> list[ReferenceDefinition]:
     definitions:list[ReferenceDefinition]=[]
     line_matches=list(re.finditer(r".*(?:\r\n|\n|\r|$)",text))
+    protected_cursor=0
     for line_index,line_match in enumerate(line_matches):
         raw=line_match.group(0);line=raw.rstrip("\r\n")
-        if not line or _span_contains(protected,line_match.start()):continue
+        while protected_cursor<len(protected) and protected[protected_cursor][1]<=line_match.start():protected_cursor+=1
+        is_protected=protected_cursor<len(protected) and protected[protected_cursor][0]<=line_match.start()<protected[protected_cursor][1]
+        if not line or is_protected:continue
         opening=re.match(r" {0,3}\\*\[",line)
         if not opening or _punctuation_is_escaped(line,opening.end()-1):continue
         label_start=opening.end();cursor=label_start;label_end=-1
@@ -570,6 +579,13 @@ def _span_contains(spans: Sequence[tuple[int,int]], position: int) -> bool:
 _CONTAINER_PREFIX = re.compile(r" {0,3}(?:>[ \t]?|(?:[*+-]|\d+[.)])[ \t]+)")
 _EXPLICIT_LINK_LIKE = re.compile(r"(?:!?\[\[|!?\[[^\]\r\n]*\]\s*(?:\(|\[)|\[[^\]\r\n]+\]:)")
 _BRACKET_GROUP = re.compile(r"!?\[([^\]\r\n]+)\]")
+_CROSS_LINE_SIGNATURES = (
+    (r"!?\[\[[^\]]*(?:\r\n|\n|\r)[^\]]*\]\]","wiki"),
+    (r"!?\[[^\]]*(?:\r\n|\n|\r)[^\]]*\][ \t]*\(","inline"),
+    (r"!?\[[^\]\r\n]*\]\([^\)]*(?:\r\n|\n|\r)[^\)]*\)","inline"),
+    (r"!?\[[^\]]*(?:\r\n|\n|\r)[^\]]*\][ \t]*\[[^\]]*\]","reference"),
+    (r"!?\[[^\]\r\n]*\]\[[^\]]*(?:\r\n|\n|\r)[^\]]*\]","reference"),
+)
 
 
 def _punctuation_is_escaped(text: str, position: int) -> bool:
@@ -650,15 +666,37 @@ def _inline_destination(text: str, opening: int) -> tuple[int,int,int,str] | Non
     return cursor+1,start,end,text[start:end]
 
 
+def _utf8_boundary_prefix(text: str) -> tuple[int,...]:
+    boundaries=[0];total=0
+    for char in text:
+        total+=len(char.encode("utf-8"));boundaries.append(total)
+    return tuple(boundaries)
+
+
+def _covering_span(spans: Sequence[tuple[int,int]], cursor: int, position: int) -> tuple[int,int|None]:
+    while cursor<len(spans) and spans[cursor][1]<=position:cursor+=1
+    if cursor<len(spans) and spans[cursor][0]<=position<spans[cursor][1]:return cursor,spans[cursor][1]
+    return cursor,None
+
+
 def _analyze_markdown(body: bytes) -> MarkdownAnalysis:
     """Own the complete bounded Markdown decision for every Cortex consumer."""
 
-    text=body.decode("utf-8",errors="strict");lines=list(re.finditer(r".*(?:\r\n|\n|\r|$)",text));opaque:list[tuple[int,int]]=[]
+    text=body.decode("utf-8",errors="strict");lines=list(re.finditer(r".*(?:\r\n|\n|\r|$)",text));opaque:list[tuple[int,int]]=[];utf8_boundaries:tuple[int,...]|None=None
     html_blocks={"address","article","aside","base","basefont","blockquote","body","caption","center","col","colgroup","dd","details","dialog","dir","div","dl","dt","fieldset","figcaption","figure","footer","form","frame","frameset","h1","h2","h3","h4","h5","h6","head","header","hr","html","iframe","legend","li","link","main","menu","menuitem","nav","noframes","ol","optgroup","option","p","param","search","section","summary","table","tbody","td","tfoot","th","thead","title","tr","track","ul"}
+
+    def start_byte(position:int)->int:
+        nonlocal utf8_boundaries
+        if utf8_boundaries is None:utf8_boundaries=_utf8_boundary_prefix(text)
+        return utf8_boundaries[position]
 
     def fail(position:int,reason:str,syntax_kind:str)->None:
         line=text.count("\n",0,position)+1;line_start=text.rfind("\n",0,position)+1
-        raise error("Markdown link syntax occurs in an unsupported or ambiguous context","unsupported_markdown_link_context",reason=reason,syntax_kind=syntax_kind,line=line,column=position-line_start+1,start_byte=len(text[:position].encode("utf-8")))
+        raise error("Markdown link syntax occurs in an unsupported or ambiguous context","unsupported_markdown_link_context",reason=reason,syntax_kind=syntax_kind,line=line,column=position-line_start+1,start_byte=start_byte(position))
+
+    def malformed(position:int,message:str,**details:object)->None:
+        line=text.count("\n",0,position)+1;line_start=text.rfind("\n",0,position)+1
+        raise error(message,"malformed_internal_link",start=position,line=line,column=position-line_start+1,start_byte=start_byte(position),**details)
 
     def explicit_candidates(line:str)->list[tuple[int,str]]:
         found=[]
@@ -754,55 +792,48 @@ def _analyze_markdown(body: bytes) -> MarkdownAnalysis:
     if context_failures:
         position,_,reason,kind=min(context_failures,key=lambda item:(item[0],item[1]))
         fail(position,reason,kind)
-    cross_line_signatures=(
-        (r"!?\[\[[^\]]*(?:\r\n|\n|\r)[^\]]*\]\]","wiki"),
-        (r"!?\[[^\]]*(?:\r\n|\n|\r)[^\]]*\][ \t]*\(","inline"),
-        (r"!?\[[^\]\r\n]*\]\([^\)]*(?:\r\n|\n|\r)[^\)]*\)","inline"),
-        (r"!?\[[^\]]*(?:\r\n|\n|\r)[^\]]*\][ \t]*\[[^\]]*\]","reference"),
-        (r"!?\[[^\]\r\n]*\]\[[^\]]*(?:\r\n|\n|\r)[^\]]*\]","reference"),
-    )
-    for pattern,kind in cross_line_signatures:
+    for pattern,kind in _CROSS_LINE_SIGNATURES:
+        protected_cursor=0
         for match in re.finditer(pattern,text):
             opening=_candidate_opening(text,match.start())
-            if opening is not None and not _span_contains(protected,opening):fail(opening,"cross_line",kind)
+            if opening is not None:
+                protected_cursor,protected_end=_covering_span(protected,protected_cursor,opening)
+                if protected_end is None:fail(opening,"cross_line",kind)
     definition_spans=[(definition.start,definition.end) for definition in definition_matches]
-    cursor=0
+    cursor=0;protected_cursor=0;definition_cursor=0
     while cursor<len(text):
-        if _span_contains(protected,cursor) or _span_contains(definition_spans,cursor):cursor+=1;continue
-        if text[cursor]=="!" and _punctuation_is_escaped(text,cursor):cursor+=1;continue
-        image=text.startswith("![[",cursor) or text.startswith("![",cursor)
-        start=cursor
-        if text.startswith("![[",cursor):opening=cursor+1
-        elif text.startswith("[[",cursor):opening=cursor
-        else:opening=-1
-        if opening>=0 and _punctuation_is_escaped(text,opening):cursor=opening+1;continue
-        if opening>=0:
+        opening=text.find("[",cursor)
+        if opening<0:break
+        protected_cursor,protected_end=_covering_span(protected,protected_cursor,opening)
+        definition_cursor,definition_end=_covering_span(definition_spans,definition_cursor,opening)
+        covering_end=protected_end if protected_end is not None else definition_end
+        if covering_end is not None:cursor=covering_end;continue
+        if _punctuation_is_escaped(text,opening):cursor=opening+1;continue
+        image=opening>0 and text[opening-1]=="!" and not _punctuation_is_escaped(text,opening-1)
+        start=opening-1 if image else opening
+        if text.startswith("[[",opening):
             closing=text.find("]]",opening+2)
-            if closing<0:raise error("Markdown contains malformed wiki link syntax","malformed_internal_link",start=start)
+            if closing<0:malformed(start,"Markdown contains malformed wiki link syntax")
             inner=text[opening+2:closing];destination,separator,label=inner.partition("|");label=label if separator else destination
             end=closing+2;dest_start=opening+2;dest_end=dest_start+len(destination)
             if not _external_destination(destination):tokens.append(LinkToken(start,end,text[start:end],destination,label,_link_kind(destination,image),dest_start,dest_end))
             cursor=end;continue
-        if image and cursor+1<len(text):opening=cursor+1
-        elif text[cursor]=="[":opening=cursor
-        else:cursor+=1;continue
-        if _punctuation_is_escaped(text,opening):cursor=opening+1;continue
         balanced=_balanced_label(text,opening)
         if balanced is None:
-            if text.find("](",opening)>=0:raise error("Markdown contains malformed link label","malformed_internal_link",start=start)
+            if text.find("](",opening)>=0:malformed(start,"Markdown contains malformed link label")
             cursor=opening+1;continue
         label_end,label=balanced;after=label_end+1
         if after<len(text) and text[after]=="(":
             parsed=_inline_destination(text,after)
-            if parsed is None:raise error("Markdown contains malformed inline link","malformed_internal_link",start=start)
+            if parsed is None:malformed(start,"Markdown contains malformed inline link")
             end,dest_start,dest_end,destination=parsed
             if not _external_destination(destination):tokens.append(LinkToken(start,end,text[start:end],destination,label,_link_kind(destination,image),dest_start,dest_end))
             cursor=end;continue
         if after<len(text) and text[after]=="[":
             ref_end=text.find("]",after+1)
-            if ref_end<0:raise error("Markdown contains malformed reference link","malformed_internal_link",start=start)
+            if ref_end<0:malformed(start,"Markdown contains malformed reference link")
             ref=text[after+1:ref_end] or label;destination=definitions.get(_reference_label_key(ref))
-            if destination is None:raise error("Markdown reference link has no safe definition","malformed_internal_link",destination=ref,start=start)
+            if destination is None:malformed(start,"Markdown reference link has no safe definition",destination=ref)
             end=ref_end+1
             if not _external_destination(destination):tokens.append(LinkToken(start,end,text[start:end],destination,label,_link_kind(destination,image)))
             cursor=end;continue
@@ -880,22 +911,23 @@ def rewrite_link_destinations(body: bytes, source_before: str, source_after: str
     return output.encode("utf-8")
 
 
-def sanitize_body(body: bytes, source_path: str, available: set[str], enabled: bool) -> tuple[bytes,list[dict[str,Any]],list[dict[str,Any]]]:
-    text=body.decode("utf-8"); unresolved=[]
-    try:tokens=markdown_links(body)
+def sanitize_body(body: bytes, source_path: str, available: set[str], enabled: bool, analysis: MarkdownAnalysis|None=None) -> tuple[bytes,list[dict[str,Any]],list[dict[str,Any]]]:
+    unresolved=[]
+    try:resolved_analysis=analysis or _analyze_markdown(body)
     except CortexError as exc:
-        if exc.code!="unsupported_markdown_link_context" or "path" in exc.details:raise
+        if exc.code not in {"unsupported_markdown_link_context","malformed_internal_link"} or "path" in exc.details:raise
         raise error(str(exc),exc.code,exc.status,path=source_path,**exc.details) from exc
-    for token in tokens:
+    for token in resolved_analysis.tokens:
         if not resolve_link(source_path, token.destination, available):
             after = token.label if token.kind=="prose" else f"[missing {token.kind}: {token.label}]"
-            start_byte=len(text[:token.start].encode("utf-8")); end_byte=len(text[:token.end].encode("utf-8"))
-            unresolved.append((token,start_byte,end_byte,after))
+            unresolved.append((token,after))
+    utf8_boundaries=_utf8_boundary_prefix(body.decode("utf-8",errors="strict")) if unresolved else ()
     transformations=[]
-    for ordinal,(token,start,end,after) in enumerate(unresolved,1):
+    for ordinal,(token,after) in enumerate(unresolved,1):
+        start=utf8_boundaries[token.start];end=utf8_boundaries[token.end]
         transformations.append({"ordinal":ordinal,"kind":token.kind,"destination":token.destination,"start_byte":start,"end_byte":end,"before":token.before,"after":after})
     if unresolved and not enabled:
-        issues=[{"rule_id":"source-link-closure","code":"source_link_closure_required","severity":"error","message":"Incoming draft contains an unresolved internal link","path":source_path,"hint":"Review the exact replacement and retry with --sanitize-links","details":{"destination":token.destination,"kind":token.kind,"start_byte":start,"end_byte":end,"before":token.before,"after":after}} for token,start,end,after in unresolved]
+        issues=[{"rule_id":"source-link-closure","code":"source_link_closure_required","severity":"error","message":"Incoming draft contains an unresolved internal link","path":source_path,"hint":"Review the exact replacement and retry with --sanitize-links","details":{"destination":item["destination"],"kind":item["kind"],"start_byte":item["start_byte"],"end_byte":item["end_byte"],"before":item["before"],"after":item["after"]}} for item in transformations]
         return body,transformations,issues
     output=bytearray(body)
     for item in reversed(transformations): output[item["start_byte"]:item["end_byte"]]=item["after"].encode("utf-8")
@@ -903,22 +935,33 @@ def sanitize_body(body: bytes, source_path: str, available: set[str], enabled: b
     return bytes(output),transformations,issues
 
 
-def build_proposal(workspace:Path,context:Mapping[str,Any],proposal_input:Mapping[str,Any]|None,sanitize:bool)->tuple[dict[str,Any],list[dict[str,Any]],list[dict[str,Any]]]:
+def build_proposal(workspace:Path,context:Mapping[str,Any],proposal_input:Mapping[str,Any]|None,sanitize:bool,drafts:Sequence[Draft]|None=None)->tuple[dict[str,Any],list[dict[str,Any]],list[dict[str,Any]]]:
     if tree_digest(workspace)!=context["base_tree_digest"]: raise error("Bundle changed after context creation","stale_bundle_digest",Status.CONFLICT)
     schema=load_tag_schema(workspace)
     if sha256_digest(tag_schema_bytes(schema))!=context["tag_schema_digest"]: raise error("Tag schema changed after context creation","stale_tag_schema",Status.CONFLICT)
-    assignments=proposal_assignments(context,proposal_input)
-    drafts=[read_draft(source["source_path"]) for source in context["sources"]]
-    for source,draft in zip(context["sources"],drafts,strict=True):
+    source_drafts=list(drafts) if drafts is not None else [read_draft(source["source_path"]) for source in context["sources"]]
+    if len(source_drafts)!=len(context["sources"]):raise error("Draft reuse coverage differs from context","proposal_coverage_mismatch",Status.CONFLICT)
+    for source,draft in zip(context["sources"],source_drafts,strict=True):
         if source["source_digest"]!=draft.source_digest: raise error("Source changed after context creation","stale_source_digest",Status.CONFLICT,path=str(draft.path))
+    analyses:list[MarkdownAnalysis|None]=[];structural_issues=[]
+    for source,draft in zip(context["sources"],source_drafts,strict=True):
+        try:analyses.append(_analyze_markdown(draft.body))
+        except CortexError as exc:
+            if exc.code not in {"unsupported_markdown_link_context","malformed_internal_link"}:raise
+            analyses.append(None)
+            structural_issues.append({"rule_id":"source-markdown-structure","code":exc.code,"severity":"error","message":str(exc),"path":source["source_path"],"concept_id":None,"operation_id":None,"hint":"Correct the reported source Markdown structure and create a new proposal","details":dict(exc.details)})
+    if structural_issues:
+        raise error("Incoming draft structure blocks proposal creation","source_structure_blocked",Status.VALIDATION_BLOCKED,issues=structural_issues)
+    assignments=proposal_assignments(context,proposal_input)
     id_name,_=_type_policy(schema)
     publication_paths=[]; selected=[]
-    for draft,item in zip(drafts,assignments,strict=True):
+    for draft,item in zip(source_drafts,assignments,strict=True):
         tag_value=resolve_tag(schema,item["assignments"][id_name]); selected.append(tag_value); publication_paths.append(publication_path(tag_value["tag"],draft.title,draft.timestamp))
     available={entry["path"] for entry in tree_manifest(workspace,exclude=(".cortex",))["entries"]}|set(publication_paths)
     rewrites=[]; publications=[]; issues=[]
-    for draft,path,tag_value in zip(drafts,publication_paths,selected,strict=True):
-        output,transforms,source_issues=sanitize_body(draft.body,path,available,sanitize)
+    for draft,path,tag_value,analysis in zip(source_drafts,publication_paths,selected,analyses,strict=True):
+        assert analysis is not None
+        output,transforms,source_issues=sanitize_body(draft.body,path,available,sanitize,analysis)
         rewrites.append({"source_id":draft.source_id,"input_body_digest":draft.body_digest,"output_body_digest":"sha256:"+hashlib.sha256(output).hexdigest(),"transformations":transforms})
         content=render_publication(draft,tag_value,output)
         publications.append({"source_id":draft.source_id,"path":path,"content_b64":base64.b64encode(content).decode("ascii"),"content_digest":hashlib.sha256(content).hexdigest()})
@@ -931,15 +974,35 @@ def _issue(code:str,message:str,path:str|None=None,**details:object)->dict[str,A
     return {"rule_id":"cortex4","code":code,"severity":"error","message":message,"path":path,"concept_id":None,"operation_id":None,"hint":None,"details":[{"name":str(key),"value":value if value is None or isinstance(value,(str,int,float,bool)) else canonical_json_bytes(value).decode("utf-8")} for key,value in sorted(details.items())]}
 
 
-def validate_bundle(workspace:Path)->tuple[dict[str,Any],list[dict[str,Any]]]:
+@dataclass(frozen=True)
+class _ValidationSnapshot:
+    manifest: Mapping[str,Any]
+    bytes_by_path: Mapping[str,bytes]
+    report: dict[str,Any]
+    issues: tuple[dict[str,Any],...]
+
+
+def _snapshot_bytes(workspace:Path,manifest:Mapping[str,Any])->dict[str,bytes]:
+    captured={}
+    for entry in manifest["entries"]:
+        relative=str(entry["path"]);path=workspace.joinpath(*PurePosixPath(relative).parts)
+        try:payload=open(_native_path(path),"rb").read()
+        except OSError as exc:raise error("Validation snapshot changed while it was captured","validation_snapshot_changed",Status.CONFLICT,path=relative) from exc
+        if len(payload)!=entry["size_bytes"] or sha256_digest(payload)!=entry["digest"]:
+            raise error("Validation snapshot changed while it was captured","validation_snapshot_changed",Status.CONFLICT,path=relative)
+        captured[relative]=payload
+    return captured
+
+
+def _validation_snapshot(workspace:Path)->_ValidationSnapshot:
     issues=[]
     if not native_is_dir(workspace) or is_reparse(workspace): raise error("Workspace must be a real bundle directory","invalid_workspace")
-    manifest=tree_manifest(workspace,exclude=(".cortex",)); files={entry["path"] for entry in manifest["entries"]}
+    manifest=tree_manifest(workspace,exclude=(".cortex",));captured=_snapshot_bytes(workspace,manifest);files={entry["path"] for entry in manifest["entries"]}
     if ".cortex" in {part for path in files for part in PurePosixPath(path).parts}: issues.append(_issue("reserved_state_path","Portable bundle contains reserved .cortex state"))
     if "index.md" not in files: issues.append(_issue("missing_index","Bundle is missing index.md","index.md"))
     else:
         try:
-            index_raw = open(_native_path(workspace / "index.md"), "rb").read()
+            index_raw = captured["index.md"]
             index_meta, index_body = _split_frontmatter(index_raw)
             if index_meta != {"okf_version": "0.1"}:
                 issues.append(_issue("invalid_okf_version", "index.md must declare only okf_version 0.1", "index.md"))
@@ -951,7 +1014,9 @@ def validate_bundle(workspace:Path)->tuple[dict[str,Any],list[dict[str,Any]]]:
         except (OSError,UnicodeError,TypeError,ValueError) as exc:
             issues.append(_issue("invalid_index",str(exc),"index.md"))
     if TAG_SCHEMA_PATH not in files: issues.append(_issue("missing_tag_schema","Bundle is missing profiles/tag-schema.json",TAG_SCHEMA_PATH))
-    try: schema=load_tag_schema(workspace)
+    try:
+        if TAG_SCHEMA_PATH not in captured:raise error("Tag schema is missing","tag_schema_required",Status.POLICY_BLOCKED)
+        schema=validate_tag_schema(strict_json(captured[TAG_SCHEMA_PATH],subject="tag schema"))
     except CortexError as exc:
         issues.append(_issue(exc.code,str(exc),TAG_SCHEMA_PATH,**exc.details)); schema=None
     available=set(files)
@@ -963,7 +1028,7 @@ def validate_bundle(workspace:Path)->tuple[dict[str,Any],list[dict[str,Any]]]:
         for relative in reference_paths:
             path=workspace.joinpath(*PurePosixPath(relative).parts)
             try:
-                raw=open(_native_path(path),"rb").read(); metadata,body=_split_frontmatter(raw)
+                raw=captured[relative]; metadata,body=_split_frontmatter(raw)
                 if set(metadata)!={"type","title","description","tags","timestamp"} or metadata["type"]!="reference" or metadata["description"]!="": raise error("Canonical reference frontmatter is invalid","invalid_reference_frontmatter")
                 tags=metadata["tags"]
                 if not isinstance(tags,list) or not tags or any(not isinstance(item,str) for item in tags): raise error("Canonical reference tags are invalid","invalid_reference_tags")
@@ -990,7 +1055,12 @@ def validate_bundle(workspace:Path)->tuple[dict[str,Any],list[dict[str,Any]]]:
     for relative in unexpected_profiles:
         issues.append(_issue("unexpected_profile_file", "TagSchema2 is the sole portable profile", relative))
     report=make_artifact("validation-report",{"bundle_identity":state_paths(workspace).identity,"validated_tree_digest":manifest["tree_digest"],"outcome":"fail" if any(item["severity"]=="error" for item in issues) else "pass","counts":{"errors":sum(item["severity"]=="error" for item in issues),"warnings":sum(item["severity"]=="warning" for item in issues)},"issues":issues})
-    return report,issues
+    return _ValidationSnapshot(manifest,captured,report,tuple(issues))
+
+
+def validate_bundle(workspace:Path)->tuple[dict[str,Any],list[dict[str,Any]]]:
+    snapshot=_validation_snapshot(workspace)
+    return snapshot.report,list(snapshot.issues)
 
 
 def path_preflight(workspace:Path,state:StatePaths,paths:Sequence[str])->list[dict[str,Any]]:
@@ -1060,13 +1130,13 @@ def path_preflight(workspace:Path,state:StatePaths,paths:Sequence[str])->list[di
     return checks
 
 
-def _simulate_tree(workspace:Path|None,operations:Sequence[Mapping[str,Any]],temp:Path)->str:
+def _simulate_tree(workspace:Path|None,operations:Sequence[Mapping[str,Any]],temp:Path)->_ValidationSnapshot:
     if _native_exists(temp):
         raise error("Planning scratch unexpectedly exists", "scratch_collision", Status.CONFLICT, path=str(temp))
     if workspace is not None and _native_exists(workspace): copy_tree(workspace,temp)
     else: os.makedirs(_native_path(temp))
     apply_operations(temp,operations)
-    return tree_digest(temp)
+    return _validation_snapshot(temp)
 
 
 @contextlib.contextmanager
@@ -1093,8 +1163,8 @@ def make_plan(workspace:Path,route:str,operations:Sequence[Mapping[str,Any]],par
     state=ensure_state(workspace)
     with _owned_scratch(state, "plan-check-") as scratch:
         simulation=scratch/"bundle"
-        expected=_simulate_tree(workspace if base_digest is not None else None,operations,simulation)
-        report, issues = validate_bundle(simulation)
+        snapshot=_simulate_tree(workspace if base_digest is not None else None,operations,simulation)
+        expected=snapshot.manifest["tree_digest"];report=snapshot.report;issues=list(snapshot.issues)
         if report["outcome"] != "pass":
             raise error(
                 "The planned snapshot would not be a valid OKF bundle",
@@ -1223,6 +1293,21 @@ def _delete_owned_namespace(state: StatePaths, journal_path: Path, plan: Mapping
     remove_tree(namespace);fsync_dir(namespace.parent)
 
 
+def _publication_transition(plan:Mapping[str,Any],phase:str,source:Path,destination:Path,*,rename:bool,effect_fault:str)->None:
+    try:
+        if rename:
+            os.replace(_native_path(source),_native_path(destination));_fault(effect_fault)
+        for parent in dict.fromkeys((source.parent,destination.parent)):fsync_dir(parent)
+    except PermissionError as exc:
+        hint="Close processes holding the bundle or transaction directories, then retry the exact same plan id; do not create a new plan or edit the journal."
+        raise error("Publication access is blocked by another process","publication_access_blocked",Status.INTERRUPTED,phase=phase,plan_id=plan["artifact_id"],retry_same_plan=True,source=str(source),destination=str(destination),errno=exc.errno,winerror=getattr(exc,"winerror",None),hint=hint) from exc
+
+
+def _validation_report_for_identity(snapshot:_ValidationSnapshot,identity:str)->dict[str,Any]:
+    report=snapshot.report
+    return make_artifact("validation-report",{"bundle_identity":identity,"validated_tree_digest":report["validated_tree_digest"],"outcome":report["outcome"],"counts":dict(report["counts"]),"issues":list(report["issues"])})
+
+
 def apply_plan(workspace:Path,plan:Mapping[str,Any])->tuple[dict[str,Any],dict[str,Any],dict[str,Any]]:
     state=ensure_state(workspace); digest=plan["digest"]; run=state.journals/digest; journal_path=run/"journal.json"; stage=state.staging/digest/"bundle"; backup=state.backups/digest/"bundle"
     with bundle_lock(state):
@@ -1231,7 +1316,8 @@ def apply_plan(workspace:Path,plan:Mapping[str,Any])->tuple[dict[str,Any],dict[s
         if not all(durability_supported(path) for path in (state.root, state.journals, state.staging, state.backups, workspace.parent)):
             raise error("Filesystem cannot provide the required durable publication barriers", "durable_publish_unsupported", Status.UNSUPPORTED)
         base_exists = plan["base_tree_digest"] is not None
-        if _native_exists(journal_path):
+        fresh_invocation=not _native_exists(journal_path);stage_snapshot:_ValidationSnapshot|None=None
+        if not fresh_invocation:
             existing=strict_json(open(_native_path(journal_path),"rb").read(),subject="apply journal")
             validate_contract(existing, "apply-journal")
             if existing["plan_id"]!=plan["artifact_id"]: raise error("Journal belongs to another plan","journal_plan_mismatch",Status.CONFLICT)
@@ -1278,7 +1364,7 @@ def apply_plan(workspace:Path,plan:Mapping[str,Any])->tuple[dict[str,Any],dict[s
                 stage_digest = tree_digest(stage)
             if stage_digest != plan["expected_tree_digest"]:
                 _ambiguous(state, journal_path, plan, events, "staged_tree_mismatch", workspace, stage, backup)
-            report, issues = validate_bundle(stage)
+            stage_snapshot=_validation_snapshot(stage);report=stage_snapshot.report;issues=list(stage_snapshot.issues)
             if report["outcome"] != "pass":
                 events = _event(events, "failed", reason="staged_validation_failed")
                 _write_journal(state, journal_path, plan, "failed", stage_digest, events)
@@ -1294,8 +1380,10 @@ def apply_plan(workspace:Path,plan:Mapping[str,Any])->tuple[dict[str,Any],dict[s
                     events=_authorize_namespace(state,journal_path,plan,"staged",stage_digest,events,"backup")
                     _delete_owned_namespace(state,journal_path,plan,events,backup.parent,workspace,stage,backup)
                     _claim_namespace(state,journal_path,plan,events,"backup",backup.parent,workspace,stage,backup)
-                    _fault("before_park"); os.replace(_native_path(workspace),_native_path(backup));fsync_dir(workspace.parent);_fault("after_park_effect")
+                    _fault("before_park");_publication_transition(plan,"park",workspace,backup,rename=True,effect_fault="after_park_effect")
                     backup_digest, live_digest = _tree_or_none(backup), _tree_or_none(workspace)
+                elif live_digest is None and backup_digest == plan["base_tree_digest"]:
+                    _publication_transition(plan,"park",workspace,backup,rename=False,effect_fault="after_park_effect")
                 if live_digest is not None or backup_digest != plan["base_tree_digest"]:
                     _ambiguous(state, journal_path, plan, events, "parked_tree_mismatch", workspace, stage, backup)
             elif live_digest is not None or backup_digest is not None:
@@ -1305,11 +1393,11 @@ def apply_plan(workspace:Path,plan:Mapping[str,Any])->tuple[dict[str,Any],dict[s
         live_digest, stage_digest, backup_digest = _tree_or_none(workspace), _tree_or_none(stage), _tree_or_none(backup)
         if state_name == "parked":
             if live_digest == plan["expected_tree_digest"] and stage_digest is None:
-                pass  # publish effect completed before its journal transition
+                _publication_transition(plan,"publish",stage,workspace,rename=False,effect_fault="after_publish_effect")
             else:
                 if live_digest is not None or stage_digest != plan["expected_tree_digest"] or (base_exists and backup_digest != plan["base_tree_digest"]):
                     _ambiguous(state, journal_path, plan, events, "publish_precondition_mismatch", workspace, stage, backup)
-                _fault("before_publish");os.replace(_native_path(stage),_native_path(workspace));fsync_dir(workspace.parent);_fault("after_publish_effect")
+                _fault("before_publish");_publication_transition(plan,"publish",stage,workspace,rename=True,effect_fault="after_publish_effect")
                 live_digest = _tree_or_none(workspace)
             if live_digest != plan["expected_tree_digest"]:
                 _ambiguous(state, journal_path, plan, events, "published_tree_mismatch", workspace, stage, backup)
@@ -1320,7 +1408,10 @@ def apply_plan(workspace:Path,plan:Mapping[str,Any])->tuple[dict[str,Any],dict[s
             _ambiguous(state, journal_path, plan, events, "receipt_precondition_mismatch", workspace, stage, backup)
         if base_exists and backup_digest != plan["base_tree_digest"]:
             _ambiguous(state, journal_path, plan, events, "backup_changed_before_receipt", workspace, stage, backup)
-        report,issues=validate_bundle(workspace)
+        if fresh_invocation and stage_snapshot is not None and published==stage_snapshot.manifest["tree_digest"]==plan["expected_tree_digest"]:
+            report=_validation_report_for_identity(stage_snapshot,state.identity);issues=list(stage_snapshot.issues)
+        else:
+            live_snapshot=_validation_snapshot(workspace);report=live_snapshot.report;issues=list(live_snapshot.issues)
         if report["outcome"]!="pass": _ambiguous(state,journal_path,plan,events,"published_validation_failed",workspace,stage,backup)
         persist_artifact(state,report)
         published_journal = _journal_snapshot(plan,"published",published,events); persist_artifact(state,published_journal)

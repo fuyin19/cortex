@@ -31,4 +31,6 @@ Review the complete plan or conflict set. For approved conflicts repeat every ex
 cortex --workspace <bundle> build ingest --plan <plan-id> --apply --json
 ```
 
-Require VerificationReceipt2 and finish with `manage validate` and `manage index`. Parse artifact IDs directly from `data.artifact_id`; never persist ResultEnvelopes as `.tmp-*`, invent tags or suffixes, patch frontmatter, or write the bundle directly.
+If apply returns `publication_access_blocked`, close applications or processes holding the bundle or its transaction directories, then retry that exact same plan ID. Never create a new plan, edit the journal, or move transaction directories manually.
+
+Require VerificationReceipt2 and finish with `manage index`; apply already supplies the full validation proof, so do not add a redundant post-apply `manage validate`. Parse artifact IDs directly from `data.artifact_id`; never persist ResultEnvelopes as `.tmp-*`, invent tags or suffixes, patch frontmatter, or write the bundle directly.
