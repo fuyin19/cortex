@@ -1,0 +1,5 @@
+{
+  "name": "cortex",
+  "version": "4.0.0",
+  "description": "Single-bundle OKF reference ingest and deterministic maintenance."
+}

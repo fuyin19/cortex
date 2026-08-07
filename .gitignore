@@ -1,0 +1,55 @@
+# Python bytecode, environments, builds, and test output
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.venv/
+venv/
+
+# Cortex runtime state and generated artifacts
+.cortex/
+*.refresh-state.json
+*.refresh-diagnosis.json
+.stale-files.json
+.batch-slim-state.json
+.orphaned-archives.json
+.compile-state.json
+_index-state.json
+.slim-backup/
+_output/
+.temp/
+*.log
+
+# Local configuration, credentials, and agent state
+.env
+.env.*
+!.env.example
+.claude/settings.local.json
+.claude/worktrees/
+
+# Editors and operating-system metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# JavaScript/plugin packaging output
+node_modules/
+
+# Private legacy eval workspaces and corpus data are intentionally local only.
+/wiki-test-workspace/
+
+# Legacy / draft files
+cortex-schema-driven-modular-optimization-plan.md
+list_tags.py

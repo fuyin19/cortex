@@ -1,0 +1,8 @@
+{
+  "name": "cortex",
+  "version": "3.0.0",
+  "description": "OKF-native knowledge workspace with three converged build, query, and manage skills.",
+  "author": {
+    "name": "fuyin"
+  }
+}

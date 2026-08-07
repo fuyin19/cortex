@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cortex-okf"
+version = "4.0.0"
+description = "OKF-native knowledge workspace and deterministic management layer"
+requires-python = ">=3.11"
+dependencies = [
+  "jsonschema>=4.18",
+  "ruamel.yaml>=0.17,<0.18",
+]
+
+[project.scripts]
+cortex = "cortex.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.data-files]
+"cortex/schemas" = [
+  "schemas/apply-journal.schema.json",
+  "schemas/mutation-plan.schema.json",
+  "schemas/result-envelope.schema.json",
+  "schemas/tag-schema.schema.json",
+  "schemas/ingest-context.schema.json",
+  "schemas/ingest-proposal-input.schema.json",
+  "schemas/ingest-proposal.schema.json",
+  "schemas/ingest-conflict.schema.json",
+  "schemas/validation-report.schema.json",
+  "schemas/verification-receipt.schema.json",
+  "schemas/method-catalog.schema.json",
+  "schemas/workspace-status.schema.json",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
