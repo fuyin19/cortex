@@ -15,6 +15,8 @@ cortex --workspace <bundle> build ingest --source <draft.md> [--source <draft2.m
 
 The draft must have exactly five fields: blank `type`, generated nonempty `title`, blank `description`, empty `tags`, and an ISO date or timezone-aware RFC3339 `timestamp`. Cortex never edits the draft.
 
+Keep the draft title to its semantic document title. Do not pre-add the selected `project-*` identifier or the final `YYYYMMDD`; publication adds those deterministic path components.
+
 If Context2 contains unresolved candidates, choose only from those candidates, construct exactly `{"context_id":"ingest-context@...","items":[...]}` in memory, and stream it without a scratch file:
 
 ```text
@@ -34,3 +36,5 @@ cortex --workspace <bundle> build ingest --plan <plan-id> --apply --json
 If apply returns `publication_access_blocked`, close applications or processes holding the bundle or its transaction directories, then retry that exact same plan ID. Never create a new plan, edit the journal, or move transaction directories manually.
 
 Require VerificationReceipt2 and finish with `manage index`; apply already supplies the full validation proof, so do not add a redundant post-apply `manage validate`. Parse artifact IDs directly from `data.artifact_id`; never persist ResultEnvelopes as `.tmp-*`, invent tags or suffixes, patch frontmatter, or write the bundle directly.
+
+Do not re-ingest existing canonical references merely to clean duplicated identifier prefixes or terminal dates. That is an in-bundle maintenance operation: hand it to `cortex:wiki-manage` and use `manage repair --phase reference-names` so the exact batch move, metadata synchronization, and link rewrites share one plan and receipt.

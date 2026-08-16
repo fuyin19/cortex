@@ -887,8 +887,8 @@ def rewrite_link_destinations(body: bytes, source_before: str, source_after: str
         new_destination = posixpath.relpath(destination_target, PurePosixPath(source_after).parent.as_posix())
         if token.destination.startswith("/"):
             new_destination = "/" + destination_target
-        fragment = "#" + token.destination.split("#", 1)[1] if "#" in token.destination else ""
-        new_destination += fragment
+        suffix_starts=[index for marker in ("?","#") if (index:=token.destination.find(marker))>=0]
+        if suffix_starts:new_destination+=token.destination[min(suffix_starts):]
         if token.destination_start is None or token.destination_end is None:
             continue
         relative_start=token.destination_start-token.start;relative_end=token.destination_end-token.start
@@ -903,6 +903,8 @@ def rewrite_link_destinations(body: bytes, source_before: str, source_after: str
         target = mapping.get(resolved, resolved)
         if resolved not in mapping and source_before == source_after: continue
         new_destination = posixpath.relpath(target, PurePosixPath(source_after).parent.as_posix())
+        suffix_starts=[index for marker in ("?","#") if (index:=destination.find(marker))>=0]
+        if suffix_starts:new_destination+=destination[min(suffix_starts):]
         replacement = text[definition.start:definition.destination_start]+new_destination+text[definition.destination_end:definition.end]
         replacements.append((definition.start, definition.end, replacement))
     output = text
@@ -1130,11 +1132,14 @@ def path_preflight(workspace:Path,state:StatePaths,paths:Sequence[str])->list[di
     return checks
 
 
-def _simulate_tree(workspace:Path|None,operations:Sequence[Mapping[str,Any]],temp:Path)->_ValidationSnapshot:
+def _simulate_tree(workspace:Path|None,operations:Sequence[Mapping[str,Any]],temp:Path,expected_base_digest:str|None=None)->_ValidationSnapshot:
     if _native_exists(temp):
         raise error("Planning scratch unexpectedly exists", "scratch_collision", Status.CONFLICT, path=str(temp))
     if workspace is not None and _native_exists(workspace): copy_tree(workspace,temp)
     else: os.makedirs(_native_path(temp))
+    observed_base=tree_digest(temp) if expected_base_digest is not None else None
+    if observed_base!=expected_base_digest:
+        raise error("Bundle changed while the plan snapshot was captured","stale_bundle_digest",Status.CONFLICT,expected=expected_base_digest,observed=observed_base)
     apply_operations(temp,operations)
     return _validation_snapshot(temp)
 
@@ -1163,7 +1168,7 @@ def make_plan(workspace:Path,route:str,operations:Sequence[Mapping[str,Any]],par
     state=ensure_state(workspace)
     with _owned_scratch(state, "plan-check-") as scratch:
         simulation=scratch/"bundle"
-        snapshot=_simulate_tree(workspace if base_digest is not None else None,operations,simulation)
+        snapshot=_simulate_tree(workspace if base_digest is not None else None,operations,simulation,base_digest)
         expected=snapshot.manifest["tree_digest"];report=snapshot.report;issues=list(snapshot.issues)
         if report["outcome"] != "pass":
             raise error(
@@ -1182,6 +1187,7 @@ def apply_operations(root:Path,operations:Sequence[Mapping[str,Any]])->None:
         if item["kind"]=="mkdir":
             os.makedirs(_native_path(path),exist_ok=True); fsync_dir(path); fsync_dir(path.parent); continue
         existing=open(_native_path(path),"rb").read() if native_is_file(path) else None
+        if item["kind"]=="create" and existing is not None:raise error("Create destination already exists","destination_conflict",Status.CONFLICT,path=relative)
         if item["expected_sha256"] is not None and (existing is None or hashlib.sha256(existing).hexdigest()!=item["expected_sha256"]): raise error("Operation preimage changed","operation_preimage_mismatch",Status.CONFLICT,path=relative)
         if item["kind"]=="delete":
             if native_is_dir(path): os.rmdir(_native_path(path))
@@ -1344,6 +1350,9 @@ def apply_plan(workspace:Path,plan:Mapping[str,Any])->tuple[dict[str,Any],dict[s
                 except CortexError: observed_schema = None
                 if observed_schema != plan["tag_schema_digest"]:
                     raise error("Tag schema changed after planning", "stale_tag_schema", Status.CONFLICT, expected=plan["tag_schema_digest"], observed=observed_schema)
+            observed_base=_tree_or_none(workspace)
+            if observed_base!=plan["base_tree_digest"]:
+                raise error("Bundle changed after planning","stale_bundle_digest",Status.CONFLICT,expected=plan["base_tree_digest"],observed=observed_base)
             os.makedirs(_native_path(run),exist_ok=False)
             fsync_dir(run.parent); events=_event([], "claimed", base_tree_digest=plan["base_tree_digest"],staging_ownership_token=hashlib.sha256(os.urandom(32)).hexdigest(),backup_ownership_token=hashlib.sha256(os.urandom(32)).hexdigest())
             _write_journal(state, journal_path, plan, "claimed", plan["base_tree_digest"], events)

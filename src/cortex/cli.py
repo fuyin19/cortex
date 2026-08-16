@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .commands import dispatch
-from .constants import PUBLIC_LEAF_ROUTES
+from .constants import PUBLIC_LEAF_ROUTES, REPAIR_PHASES
 from .contracts import make_envelope
 from .errors import CortexError, Status
 
@@ -38,7 +38,7 @@ def _parser()->ContractParser:
     config=sub.add_parser("config");config.add_argument("action",choices=("show","set"),nargs="?",default="show");config.add_argument("--file");_mutation(config)
     sub.add_parser("validate")
     sub.add_parser("index")
-    repair=sub.add_parser("repair");repair.add_argument("--phase",choices=("structural","link-closure"),default="structural");_mutation(repair)
+    repair=sub.add_parser("repair");repair.add_argument("--phase",choices=REPAIR_PHASES,default="structural");_mutation(repair)
     rename=sub.add_parser("rename");rename.add_argument("--from",dest="old");rename.add_argument("--to",dest="new");_mutation(rename)
     retag=sub.add_parser("retag");retag.add_argument("action",choices=("set",),nargs="?");retag.add_argument("--reference");retag.add_argument("--tags");_mutation(retag)
     return parser

@@ -18,8 +18,8 @@ import pytest
 from cortex.cli import main
 from cortex.canonical import _native_path
 from cortex.core4 import (
-    SimulatedCrash, _owned_scratch, bundle_identity, bundle_lock, config_compatible, load_artifact, markdown_links, sanitize_body,
-    persist_artifact, read_json_operand, state_paths, strict_json, tree_digest, validate_bundle,
+    SimulatedCrash, _owned_scratch, _split_frontmatter, apply_operations, bundle_identity, bundle_lock, config_compatible, load_artifact, markdown_links, operation, sanitize_body,
+    persist_artifact, read_json_operand, render_canonical_reference, state_paths, strict_json, tree_digest, validate_bundle,
 )
 from cortex.errors import CortexError
 from cortex.native import native_path
@@ -84,7 +84,7 @@ def init_bundle(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Path:
 
 def test_closed_surface_and_registry() -> None:
     assert len(PUBLIC_LEAF_ROUTES) == 9
-    assert len(FEATURE_IDS) == 9
+    assert len(FEATURE_IDS) == 10
     assert len(SCHEMA_IDS) == 12
     assert len(validate_registry()) == 12
 
@@ -544,6 +544,19 @@ def _ingest_named(root: Path, base: Path, capsys: pytest.CaptureFixture[str], ti
     return root/"references"/f"{tag}-{title.casefold().replace(' ','-')}-20260806.md"
 
 
+def _write_canonical_reference(root: Path, filename: str, timestamp: str, body: bytes=b"Body.\n", tag: str="project-elevate") -> Path:
+    target=root/"references"/filename
+    target.write_bytes(render_canonical_reference(target.stem,[tag,"listing-main"],timestamp,body))
+    return target
+
+
+def _configure_project(root: Path, base: Path, capsys: pytest.CaptureFixture[str], tag: str) -> None:
+    value=copy.deepcopy(schema());value["types"]["reference"]["dimensions"]["project"]["values"].append({"tag":tag,"label":tag,"aliases":[],"derived_tags":["listing-main"]})
+    source=base/(tag+".json");source.write_text(json.dumps(value),encoding="utf-8")
+    status,planned=invoke(capsys,"--workspace",str(root),"manage","config","set","--file",str(source));assert status==0,planned["issues"]
+    _apply_route(capsys,root,["manage","config","set"],planned)
+
+
 def test_validation_and_repair_share_unsupported_context_gate(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root=init_bundle(tmp_path,capsys);reference=_ingest_named(root,tmp_path,capsys,"Nested Canonical")
     reference.write_bytes(reference.read_bytes()+b"- [broken](missing.md)\n")
@@ -595,6 +608,109 @@ def test_structural_and_link_repairs_are_exact_plans(tmp_path: Path, capsys: pyt
     status,planned=invoke(capsys,"--workspace",str(root),"manage","repair","--phase","link-closure");assert status==0
     _apply_route(capsys,root,["manage","repair","--phase","link-closure"],planned)
     assert b"[missing](missing.md)" not in reference.read_bytes() and reference.read_bytes().endswith(b"missing\n")
+
+
+def test_reference_name_standardization_batches_metadata_dates_and_links(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root=init_bundle(tmp_path,capsys);_configure_project(root,tmp_path,capsys,"project-falcon-2025")
+    old_a=_write_canonical_reference(root,"project-elevate-project-elevate-a2-analysis-20260114-20260514.md","2026-05-14",b"See [Board](project-elevate-board-minutes-20260801-20260601.md?mode=full#board).\nSentinel A.\n")
+    old_b=_write_canonical_reference(root,"project-elevate-board-minutes-20260801-20260601.md","2026-06-01",b"See [Analysis](project-elevate-project-elevate-a2-analysis-20260114-20260514.md).\nSentinel B.\n")
+    old_equal=_write_canonical_reference(root,"project-elevate-project-elevate-cover-20260410-20260410.md","2026-04-10T09:30:00+08:00",b"Equal.\n")
+    old_falcon=_write_canonical_reference(root,"project-falcon-2025-project-falcon-2025-prospectus-20260129.md","2026-01-29",b"Falcon.\n",tag="project-falcon-2025")
+    index=root/"index.md";index.write_bytes(index.read_bytes()+b"\n[Analysis](references/project-elevate-project-elevate-a2-analysis-20260114-20260514.md#section)\n")
+    before=tree_digest(root);status,planned=invoke(capsys,"--workspace",str(root),"manage","repair","--phase","reference-names")
+    assert status==0 and tree_digest(root)==before and planned["data"]["route"]=="manage.repair"
+    applied=_apply_route(capsys,root,["manage","repair","--phase","reference-names"],planned)
+    assert applied["data"]["artifact_id"].startswith("verification-receipt@")
+    new_a=root/"references"/"project-elevate-a2-analysis-20260114.md";new_b=root/"references"/"project-elevate-board-minutes-20260601.md"
+    new_equal=root/"references"/"project-elevate-cover-20260410.md";new_falcon=root/"references"/"project-falcon-2025-prospectus-20260129.md"
+    assert all(path.is_file() for path in (new_a,new_b,new_equal,new_falcon)) and not any(path.exists() for path in (old_a,old_b,old_equal,old_falcon))
+    metadata_a,body_a=_split_frontmatter(new_a.read_bytes());metadata_b,body_b=_split_frontmatter(new_b.read_bytes())
+    assert metadata_a=={"type":"reference","title":"project-elevate-a2-analysis-20260114","description":"","tags":["project-elevate","listing-main"],"timestamp":"2026-01-14"}
+    assert metadata_b["timestamp"]=="2026-06-01" and body_a.endswith(b"Sentinel A.\n") and body_b.endswith(b"Sentinel B.\n")
+    assert b"project-elevate-board-minutes-20260601.md?mode=full#board" in body_a and b"project-elevate-a2-analysis-20260114.md" in body_b
+    assert b"references/project-elevate-a2-analysis-20260114.md#section" in index.read_bytes()
+    assert _split_frontmatter(new_equal.read_bytes())[0]["timestamp"]=="2026-04-10T09:30:00+08:00"
+    assert _split_frontmatter(new_falcon.read_bytes())[0]["tags"]==["project-falcon-2025","listing-main"]
+    report,issues=validate_bundle(root);assert report["outcome"]=="pass" and not issues
+
+
+def test_reference_name_standardization_is_exact_deterministic_and_idempotent(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root=init_bundle(tmp_path,capsys)
+    controls=[
+        _write_canonical_reference(root,"project-elevate-note-20260114.md","2026-01-14"),
+        _write_canonical_reference(root,"project-elevate-project-elevation-20260114.md","2026-01-14"),
+        _write_canonical_reference(root,"project-elevate-notes-20260114-v2-20260514.md","2026-05-14"),
+        _write_canonical_reference(root,"project-elevate-notes-20240101-20250101-20260101.md","2026-01-01"),
+        _write_canonical_reference(root,"project-elevate-note-20250230-20250514.md","2025-05-14"),
+        _write_canonical_reference(root,"project-elevate-note-２０２５０１１４-20250514.md","2025-05-14"),
+    ]
+    unchanged={path.name:path.read_bytes() for path in controls}
+    old=_write_canonical_reference(root,"project-elevate-project-elevate-control-20260114-20260514.md","2026-05-14")
+    before=tree_digest(root);status,first=invoke(capsys,"--workspace",str(root),"manage","repair","--phase","reference-names");assert status==0 and tree_digest(root)==before
+    status,second=invoke(capsys,"--workspace",str(root),"manage","repair","--phase","reference-names");assert status==0
+    assert first["data"]["artifact_id"]==second["data"]["artifact_id"] and first["data"]["operations"]==second["data"]["operations"]
+    _apply_route(capsys,root,["manage","repair","--phase","reference-names"],first)
+    assert not old.exists() and (root/"references"/"project-elevate-control-20260114.md").is_file()
+    assert {path.name:path.read_bytes() for path in controls}==unchanged
+    status,noop=invoke(capsys,"--workspace",str(root),"manage","repair","--phase","reference-names")
+    assert status==0 and noop["data"]["operations"]==[] and noop["data"]["expected_tree_digest"]==noop["data"]["base_tree_digest"]
+
+
+@pytest.mark.parametrize(("filename","timestamp"),[
+    ("project-elevate-project-elevate-20260514.md","2026-05-14"),
+    ("project-elevate-20260114-20260514.md","2026-05-14"),
+])
+def test_reference_name_standardization_rejects_empty_semantic_titles(tmp_path: Path, capsys: pytest.CaptureFixture[str], filename: str, timestamp: str) -> None:
+    root=init_bundle(tmp_path,capsys);source=_write_canonical_reference(root,filename,timestamp);before=tree_digest(root)
+    status,result=invoke(capsys,"--workspace",str(root),"manage","repair","--phase","reference-names")
+    assert status==4 and result["issues"][0]["code"]=="ambiguous_reference_name_standardization" and not result["artifacts"]
+    assert source.is_file() and tree_digest(root)==before
+
+
+def test_create_operation_requires_an_absent_destination(tmp_path: Path) -> None:
+    root=tmp_path/"tree";root.mkdir();target=root/"occupied.md";target.write_bytes(b"keep")
+    with pytest.raises(CortexError) as caught:apply_operations(root,[operation("create","occupied.md",b"replace")])
+    assert caught.value.code=="destination_conflict" and target.read_bytes()==b"keep"
+
+
+def test_reference_name_standardization_plan_is_bound_to_its_validation_snapshot(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    import cortex.service as service
+    root=init_bundle(tmp_path,capsys);old=_write_canonical_reference(root,"project-elevate-project-elevate-race-20260114-20260514.md","2026-05-14")
+    destination=root/"references"/"project-elevate-race-20260114.md";original=service.make_plan
+    def raced(workspace: Path, route: str, operations: object, **kwargs: object) -> dict:
+        _write_canonical_reference(root,destination.name,"2026-01-14",b"Concurrent user file.\n")
+        return original(workspace,route,operations,**kwargs)
+    monkeypatch.setattr(service,"make_plan",raced);state=state_paths(root);artifacts={path.name for path in state.artifacts.iterdir()}
+    status,result=invoke(capsys,"--workspace",str(root),"manage","repair","--phase","reference-names")
+    assert status==5 and result["issues"][0]["code"]=="stale_bundle_digest" and not result["artifacts"]
+    assert old.is_file() and destination.read_bytes().endswith(b"Concurrent user file.\n") and {path.name for path in state.artifacts.iterdir()}==artifacts
+
+
+def test_reference_name_standardization_reports_complete_collisions_without_plan(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root=init_bundle(tmp_path,capsys);_configure_project(root,tmp_path,capsys,"project-beta")
+    _write_canonical_reference(root,"project-elevate-note-20260114.md","2026-01-14",b"Occupied.\n")
+    _write_canonical_reference(root,"project-elevate-project-elevate-note-20260114-20260514.md","2026-05-14",b"Source.\n")
+    beta_a=_write_canonical_reference(root,"project-beta-project-beta-report-20260114-20260514.md","2026-05-14",b"Beta A.\n",tag="project-beta")
+    beta_b=_write_canonical_reference(root,"project-beta-project-beta-report-20260514-20260114.md","2026-01-14",b"Beta B.\n",tag="project-beta")
+    safe=_write_canonical_reference(root,"project-elevate-project-elevate-safe-20260114-20260514.md","2026-05-14",b"Safe.\n")
+    state=state_paths(root);artifacts={path.name for path in state.artifacts.iterdir()};before=tree_digest(root)
+    status,result=invoke(capsys,"--workspace",str(root),"manage","repair","--phase","reference-names")
+    assert status==5 and result["issues"][0]["code"]=="destination_conflict" and not result["artifacts"] and tree_digest(root)==before
+    detail=next(item["value"] for item in result["issues"][0]["details"] if item["name"]=="conflicts");conflicts=json.loads(detail)
+    assert [item["destination"] for item in conflicts]==["references/project-beta-report-20260114.md","references/project-elevate-note-20260114.md"]
+    assert conflicts[0]["sources"]==sorted([beta_a.relative_to(root).as_posix(),beta_b.relative_to(root).as_posix()])
+    assert conflicts[1]["occupied_by"]=="references/project-elevate-note-20260114.md"
+    assert {path.name for path in state.artifacts.iterdir()}==artifacts and safe.exists()
+
+
+def test_reference_name_standardization_stale_plan_is_rejected_before_claim(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root=init_bundle(tmp_path,capsys);old=_write_canonical_reference(root,"project-elevate-project-elevate-stale-20260114-20260514.md","2026-05-14")
+    status,planned=invoke(capsys,"--workspace",str(root),"manage","repair","--phase","reference-names");assert status==0
+    state=state_paths(root);plan=load_artifact(state,planned["data"]["artifact_id"],"mutation-plan");index=root/"index.md";index.write_bytes(index.read_bytes()+b"\nUser edit.\n");changed=tree_digest(root)
+    status,result=invoke(capsys,"--workspace",str(root),"manage","repair","--plan",plan["artifact_id"],"--apply")
+    assert status==5 and result["issues"][0]["code"]=="stale_bundle_digest" and tree_digest(root)==changed
+    assert old.is_file() and not (root/"references"/"project-elevate-stale-20260114.md").exists()
+    assert not (state.journals/plan["digest"]).exists() and not result["artifacts"]
 
 
 def test_external_index_does_not_change_bundle(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

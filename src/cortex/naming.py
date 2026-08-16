@@ -23,6 +23,7 @@ LEGACY_NON_18A_TAG = "chapter-8-05"
 _PROJECT_TAG = re.compile(r"^project-[a-z0-9][a-z0-9-]*$")
 _LEADING_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}-")
 _ISO_DATE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:$|[T ])")
+_COMPACT_DATE_TOKEN = re.compile(r"^[0-9]{8}$")
 _INVALID_FILENAME = re.compile(r"[<>:\"/\\|?*\x00-\x1f]")
 _STRUCTURAL_SPACE = re.compile(r"\s*-\s*")
 _REPEATED_HYPHEN = re.compile(r"-{2,}")
@@ -138,6 +139,39 @@ def script_reference_filename(identifier_tag: str, title: str, timestamp: Any) -
     if compact is None:
         raise _policy_error("Reference timestamp is invalid", "invalid_reference_timestamp")
     return f"{identifier}-{normalize_script_title(title)}-{compact}.md"
+
+
+def reference_filename_standardization(identifier_tag: str, title: str, timestamp: str) -> tuple[str, str] | None:
+    """Return a deterministic repaired title/timestamp, or ``None`` for a nonmatch."""
+
+    if not isinstance(identifier_tag,str) or not _PROJECT_TAG.fullmatch(identifier_tag):return None
+    if not isinstance(title,str) or not isinstance(timestamp,str):return None
+    compact=_compact_date(timestamp)
+    if compact is None:return None
+    canonical_date=date(int(compact[:4]),int(compact[4:6]),int(compact[6:]));prefix=identifier_tag+"-";suffix="-"+compact
+    if not title.startswith(prefix) or not title.endswith(suffix):return None
+    normalized=title[len(prefix):-len(suffix)];duplicate=identifier_tag+"-";project_changed=False
+    if normalized==identifier_tag:raise _policy_error("Reference-name standardization would remove the semantic title","ambiguous_reference_name_standardization")
+    while normalized.startswith(duplicate):
+        normalized=normalized[len(duplicate):];project_changed=True
+    if project_changed and not normalized:raise _policy_error("Reference-name standardization would remove the semantic title","ambiguous_reference_name_standardization")
+    if _COMPACT_DATE_TOKEN.fullmatch(normalized):
+        try:date(int(normalized[:4]),int(normalized[4:6]),int(normalized[6:]))
+        except ValueError:pass
+        else:raise _policy_error("Reference-name standardization would remove the semantic title","ambiguous_reference_name_standardization")
+    retained=canonical_date;date_changed=False;pair=normalized.rsplit("-",1)
+    if len(pair)==2 and pair[0] and _COMPACT_DATE_TOKEN.fullmatch(pair[1]):
+        try:first=date(int(pair[1][:4]),int(pair[1][4:6]),int(pair[1][6:]))
+        except ValueError:first=None
+        preceding_token=pair[0].rsplit("-",1)[-1];preceding=None
+        if _COMPACT_DATE_TOKEN.fullmatch(preceding_token):
+            try:preceding=date(int(preceding_token[:4]),int(preceding_token[4:6]),int(preceding_token[6:]))
+            except ValueError:preceding=None
+        if first is not None and preceding is None:
+            retained=min(first,canonical_date);normalized=pair[0];date_changed=True
+    if not project_changed and not date_changed:return None
+    retained_compact=retained.strftime("%Y%m%d");new_timestamp=timestamp if retained_compact==compact else retained.isoformat()
+    return f"{identifier_tag}-{normalized}-{retained_compact}",new_timestamp
 
 
 def project_reference_policy_requested(metadata: Mapping[str, Any]) -> bool:
@@ -281,6 +315,7 @@ __all__ = [
     "normalize_script_title",
     "project_reference_policy_requested",
     "project_reference_identity",
+    "reference_filename_standardization",
     "validate_project_reference",
     "script_reference_filename",
 ]

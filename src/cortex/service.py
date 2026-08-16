@@ -11,7 +11,7 @@ from typing import Any, Mapping, Sequence
 
 from .canonical import _native_path, canonical_json_bytes, sha256_digest, tree_manifest
 from .commands import CommandOutcome
-from .constants import FEATURE_IDS, INDEX_BYTES, METHOD_ID, METHOD_VERSION, PUBLIC_LEAF_ROUTES, SCHEMA_IDS, TAG_SCHEMA_PATH
+from .constants import FEATURE_IDS, INDEX_BYTES, METHOD_ID, METHOD_VERSION, PUBLIC_LEAF_ROUTES, REPAIR_PHASES, SCHEMA_IDS, TAG_SCHEMA_PATH
 from .contracts import artifact_ref, validate_contract
 from .core4 import (
     _split_frontmatter, _validation_snapshot, apply_plan, build_proposal, config_compatible, conflict_artifacts, context_for,
@@ -21,6 +21,7 @@ from .core4 import (
     tree_digest, validate_bundle, validate_tag_schema,
 )
 from .errors import CortexError, Status
+from .naming import normalized_filename_key, reference_filename_standardization
 from .native import copy_tree, exists as native_exists, is_dir as native_is_dir, is_file as native_is_file, is_reparse, native_path, reject_reparse_ancestry, remove_tree
 from .paths import normalize_relative_path
 
@@ -114,6 +115,49 @@ class CortexService:
             operations.append(operation("replace", relative, rewritten, current, index=len(operations)))
         if old != new: operations.append(operation("delete", old.as_posix(), expected=raw, index=len(operations)))
         return operations
+
+    def _reference_name_standardization_operations(self) -> tuple[list[dict[str, Any]],str]:
+        snapshot=_validation_snapshot(self.workspace)
+        if snapshot.report["outcome"]!="pass":
+            raise error("Reference-name standardization requires a valid bundle","reference_name_standardization_requires_valid_bundle",Status.VALIDATION_BLOCKED,issues=list(snapshot.issues))
+        available={str(entry["path"]) for entry in snapshot.manifest["entries"]}
+        references=sorted((path for path in available if path.startswith("references/") and path.endswith(".md")),key=lambda item:item.encode("utf-8"))
+        moves:dict[str,dict[str,Any]]={}
+        for relative in references:
+            metadata,_body=_split_frontmatter(snapshot.bytes_by_path[relative]);tags=metadata.get("tags",[])
+            standardized=reference_filename_standardization(str(tags[0]) if tags else "",str(metadata.get("title","")),str(metadata.get("timestamp","")))
+            if standardized is None:continue
+            new_title,new_timestamp=standardized;new_relative=(PurePosixPath("references")/(new_title+".md")).as_posix()
+            self._reference_lexical(new_relative,role="Standardized reference destination")
+            if new_relative==relative:continue
+            moves[relative]={"path":new_relative,"title":new_title,"timestamp":new_timestamp,"tags":list(metadata["tags"])}
+        existing_by_key={normalized_filename_key(PurePosixPath(path).name):path for path in references}
+        groups:dict[str,dict[str,Any]]={}
+        for source,item in moves.items():
+            key=normalized_filename_key(PurePosixPath(str(item["path"])).name);group=groups.setdefault(key,{"destinations":set(),"sources":[]})
+            group["destinations"].add(str(item["path"]));group["sources"].append(source)
+        conflicts=[]
+        for key in sorted(groups):
+            group=groups[key];sources=sorted(group["sources"],key=lambda item:item.encode("utf-8"));destinations=sorted(group["destinations"],key=lambda item:item.encode("utf-8"));occupied=existing_by_key.get(key)
+            if len(sources)>1 or occupied is not None and occupied not in sources:
+                conflicts.append({"destination":destinations[0],"sources":sources,"occupied_by":occupied if occupied not in sources else None})
+        if conflicts:
+            raise error("Reference-name standardization destinations collide","destination_conflict",Status.CONFLICT,conflicts=conflicts)
+        mapping={source:str(item["path"]) for source,item in moves.items()};operations=[]
+        for source in sorted(moves,key=lambda item:item.encode("utf-8")):
+            item=moves[source];destination=str(item["path"]);_metadata,body=_split_frontmatter(snapshot.bytes_by_path[source]);moved_body=rewrite_link_destinations(body,source,destination,mapping,available)
+            content=render_canonical_reference(str(item["title"]),list(item["tags"]),str(item["timestamp"]),moved_body)
+            operations.append(operation("create",destination,content,index=len(operations)))
+        for relative in sorted((path for path in available if path=="index.md" or path.startswith("references/") and path.endswith(".md")),key=lambda item:item.encode("utf-8")):
+            if relative in moves:continue
+            current=snapshot.bytes_by_path[relative];metadata,current_body=_split_frontmatter(current)
+            rewritten_body=rewrite_link_destinations(current_body,relative,relative,mapping,available)
+            if rewritten_body==current_body:continue
+            rewritten=(b'---\nokf_version: "0.1"\n---\n'+rewritten_body if relative=="index.md" else render_canonical_reference(str(metadata["title"]),list(metadata["tags"]),str(metadata["timestamp"]),rewritten_body))
+            operations.append(operation("replace",relative,rewritten,current,index=len(operations)))
+        for source in sorted(moves,key=lambda item:item.encode("utf-8")):
+            operations.append(operation("delete",source,expected=snapshot.bytes_by_path[source],index=len(operations)))
+        return operations,str(snapshot.manifest["tree_digest"])
 
     def manage_status(self, args: Any) -> CommandOutcome:
         kind = args.kind or "bundle"
@@ -235,7 +279,7 @@ class CortexService:
         applied=self._plan_apply(args,"manage.repair")
         if applied:return applied
         if not native_is_dir(self.workspace) or is_reparse(self.workspace): raise error("Repair requires a real bundle root", "workspace_unavailable")
-        operations=[]
+        operations=[];base_digest=None
         if args.phase=="structural":
             if not native_is_file(self.workspace/"profiles"/"tag-schema.json"): raise error("Structural repair cannot invent a missing TagSchema2", "tag_schema_required", Status.POLICY_BLOCKED)
             if not native_is_file(self.workspace/"index.md"):
@@ -251,8 +295,10 @@ class CortexService:
                 if transforms:
                     rendered=render_canonical_reference(str(metadata["title"]),list(metadata["tags"]),str(metadata["timestamp"]),output)
                     operations.append(operation("replace",relative,rendered,raw,index=len(operations)))
-        else:raise error("Repair phase must be structural or link-closure","invalid_repair_phase",Status.USAGE_ERROR)
-        plan=make_plan(self.workspace,"manage.repair",operations,base_digest=tree_digest(self.workspace),tag_digest=sha256_digest(tag_schema_bytes(load_tag_schema(self.workspace))));state=ensure_state(self.workspace);persist_artifact(state,plan);return _data("mutation-plan",plan,artifacts=(plan,))
+        elif args.phase=="reference-names":
+            self._require_bundle();operations,base_digest=self._reference_name_standardization_operations()
+        else:raise error("Repair phase is not supported","invalid_repair_phase",Status.USAGE_ERROR,allowed=list(REPAIR_PHASES))
+        plan=make_plan(self.workspace,"manage.repair",operations,base_digest=tree_digest(self.workspace) if base_digest is None else base_digest,tag_digest=sha256_digest(tag_schema_bytes(load_tag_schema(self.workspace))));state=ensure_state(self.workspace);persist_artifact(state,plan);return _data("mutation-plan",plan,artifacts=(plan,))
 
     def manage_rename(self,args:Any)->CommandOutcome:
         applied=self._plan_apply(args,"manage.rename")

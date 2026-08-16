@@ -31,6 +31,8 @@ PUBLIC_LEAF_ROUTES = (
     "manage.retag",
 )
 
+REPAIR_PHASES = ("structural", "link-closure", "reference-names")
+
 FEATURE_IDS = (
     "workspace.bundle-root-v1",
     "workspace.external-state-v1",
@@ -40,6 +42,7 @@ FEATURE_IDS = (
     "build.ingest.exact-plan-apply-v2",
     "manage.tag-schema.direct-v1",
     "manage.reference-maintenance-v1",
+    "manage.reference-name-standardization-v1",
     "manage.index.external-state-v1",
 )
 

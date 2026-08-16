@@ -27,6 +27,15 @@ cortex --workspace <bundle> manage config set --plan <plan-id> --apply --json
 
 Review the plan and require all existing references to remain valid. Cortex does not copy the bundle, silently retag references, or maintain alternate bundle identities.
 
-Use `manage validate` for full validation, `manage index` for a direct external derived index, and exact plan/apply for `manage repair`, `manage rename`, and `manage retag`. Never edit external state, journals, plans, indexes, or bundle bytes by hand. Do not create caller-managed temporary envelopes.
+Use `manage validate` for full validation, `manage index` for a direct external derived index, and exact plan/apply for `manage repair`, `manage rename`, and `manage retag`. For legacy canonical references whose filename repeats the exact identifier prefix or ends in exactly two real `YYYYMMDD` dates, use one deterministic batch repair:
+
+```text
+cortex --workspace <bundle> manage repair --phase reference-names --json
+cortex --workspace <bundle> manage repair --plan <plan-id> --apply --json
+```
+
+This phase uses the canonical identifier tag rather than filename inference, retains the earlier date, synchronizes `title` and `timestamp`, and rewrites supported internal links through the complete move mapping. Calendar-invalid date tokens and names with three terminal dates are not guessed through. Review the complete plan and stop on any destination collision.
+
+Never edit external state, journals, plans, indexes, or bundle bytes by hand. Do not create caller-managed temporary envelopes.
 
 If apply returns `publication_access_blocked`, close applications or processes holding the bundle or its transaction directories, then retry the exact same plan ID. Never create a new plan, edit the journal, or move transaction directories manually.
