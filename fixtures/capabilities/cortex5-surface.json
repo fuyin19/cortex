@@ -1,0 +1,20 @@
+{
+  "distribution": "cortex-record-kb",
+  "import": "cortex",
+  "version": "5.0.0",
+  "routes": [
+    "manage.init",
+    "manage.status",
+    "manage.validate",
+    "manage.config.show",
+    "manage.config.set",
+    "record.add",
+    "record.edit"
+  ],
+  "profiles": [
+    "record-schema.json",
+    "tags.json",
+    "layout.json"
+  ],
+  "skill_count": 2
+}

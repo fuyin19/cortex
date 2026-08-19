@@ -1,528 +1,285 @@
-"""OKF conformance, Cortex profile, health, and closure validation."""
+"""Side-effect-free structural validation for a Cortex 5 record KB."""
 
 from __future__ import annotations
 
 import os
-import re
-import unicodedata
-from collections.abc import Iterable, Mapping
-from datetime import date, datetime
+import stat
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .canonical import _native_path, sha256_digest, tree_manifest
-from .contracts import make_artifact
-from .errors import CortexError, Status
-from .okf import (
-    RESERVED_FILENAMES,
-    SUPPORTED_OKF_VERSION,
-    discover_bundle_version,
-    extract_markdown_links,
-    parse_concept,
-    parse_root_index,
-    resolve_internal_link,
-)
-from .paths import collision_key, normalize_relative_path
-from .policy import EffectivePolicy, TagSchema, load_tag_schema, resolve_effective_policy, resolve_tag_value
+from .constants import DEFAULT_LAYOUT, PROFILE_FILENAMES, RECORD_SCHEMA
+from .errors import CortexError, issue
+from .jsonio import json_bytes, loads_object
+from .native import component_problem, is_reparse_metadata, native_path
+from .profiles import validate_layout_profile, validate_record, validate_record_schema, validate_tags_profile
 
 
-AUTHORING_PROFILE = "cortex-authoring-v1"
-IMPORT_PROFILE = "cortex-import-v1"
-NATIVE_PROFILE = "cortex-native-v1"
-_PROFILE_REQUIRED_PATHS = (
-    "index.md",
-    "log.md",
-    "references",
-    "concepts",
-    "entities",
-    "outputs",
-    "assets",
-    "profiles",
-    "profiles/cortex-v1.md",
-)
-_DATE_HEADING = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2})\s*$")
-_H1 = re.compile(r"^#\s+\S")
-_PROFILE_MARKER = re.compile(r"^Profile:\s*(\S+)\s*$", re.MULTILINE)
-_REFERENCE_DATE_SUFFIX = re.compile(r"-(\d{8})$")
+@dataclass
+class ValidationReport:
+    issues: list[dict[str, Any]]
+    count: int
+    tags: dict[str, Any] | None
+    layout: dict[str, Any] | None
+
+    @property
+    def valid(self) -> bool:
+        return not self.issues
 
 
-def _issue(
-    code: str,
-    message: str,
-    *,
-    path: str | None,
-    severity: str = "error",
-    rule_id: str = "okf",
-    concept_id: str | None = None,
-    hint: str | None = None,
-    details: Iterable[dict[str, Any]] = (),
-) -> dict[str, Any]:
-    return {
-        "rule_id": rule_id,
-        "code": code,
-        "severity": severity,
-        "message": message,
-        "path": path,
-        "concept_id": concept_id,
-        "operation_id": None,
-        "hint": hint,
-        "details": list(details),
-    }
-
-
-def _read_text(path: Path, relative: str) -> str:
+def _scan(directory: Path, label: str, issues: list[dict[str, Any]]) -> list[os.DirEntry[str]]:
     try:
-        # Staging trees can push long reference filenames past Windows MAX_PATH.
-        with open(_native_path(path), "rb") as stream:
-            raw = stream.read()
-        if raw.startswith(b"\xef\xbb\xbf"):
-            raise UnicodeError("BOM")
-        return raw.decode("utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise CortexError(
-            "Markdown file is not strict UTF-8",
-            status=Status.VALIDATION_BLOCKED,
-            code="invalid_utf8",
-            details={"path": relative},
-        ) from exc
+        return sorted(os.scandir(native_path(directory)), key=lambda entry: entry.name.encode("utf-8", errors="surrogatepass"))
+    except OSError as exc:
+        issues.append(issue("directory_unreadable", "Directory could not be read", path=label, os_error=str(exc)))
+        return []
 
 
-def _reserved_issues(root: Path, path: Path, relative: str) -> list[dict[str, Any]]:
-    issues: list[dict[str, Any]] = []
+def _lstat(path: Path, label: str, issues: list[dict[str, Any]]) -> os.stat_result | None:
     try:
-        text = _read_text(path, relative)
-    except CortexError:
-        return [_issue("invalid_utf8", "Reserved document is not strict UTF-8", path=relative)]
-    body = text
-    if path.name.casefold() == "index.md":
-        if relative == "index.md":
-            try:
-                _, body = parse_root_index(root)
-            except CortexError as exc:
-                return [_issue(exc.code, str(exc), path=relative)]
-        elif text.startswith("---"):
-            issues.append(_issue("nested_index_frontmatter", "Only root index.md may have frontmatter", path=relative))
-        if not any(_H1.match(line) for line in body.splitlines()):
-            issues.append(_issue("invalid_index_structure", "index.md must contain at least one H1 section", path=relative))
-    else:
-        headings = [line for line in body.splitlines() if line.startswith("#")]
-        if not headings or not _H1.match(headings[0]):
-            issues.append(_issue("invalid_log_structure", "log.md must start with an H1 heading", path=relative))
-        for line in headings[1:]:
-            if line.startswith("##"):
-                match = _DATE_HEADING.match(line)
-                if match is None:
-                    issues.append(_issue("invalid_log_date", "Log H2 headings must be YYYY-MM-DD", path=relative))
-                    continue
-                try:
-                    date.fromisoformat(match.group(1))
-                except ValueError:
-                    issues.append(_issue("invalid_log_date", "Log date heading is not a real date", path=relative))
-    return issues
+        return os.lstat(native_path(path))
+    except OSError as exc:
+        issues.append(issue("path_unreadable", "Filesystem entry could not be inspected", path=label, os_error=str(exc)))
+        return None
 
 
-def _profile_issues(frontmatter: Mapping[str, Any], relative: str, profile: str | None) -> list[dict[str, Any]]:
-    if profile is None or profile in {IMPORT_PROFILE, NATIVE_PROFILE}:
-        return []
-    if profile != AUTHORING_PROFILE:
-        return [_issue("unknown_profile", "Unknown Cortex validation profile", path=relative, rule_id="profile")]
-    issues: list[dict[str, Any]] = []
-    for field in ("title", "description", "timestamp"):
-        value = frontmatter.get(field)
-        if value is None or (isinstance(value, str) and not value.strip()):
-            issues.append(
-                _issue(
-                    "missing_profile_field",
-                    f"Authoring profile requires non-empty {field}",
-                    path=relative,
-                    rule_id="profile",
-                    details=[{"name": "field", "value": field}],
-                )
-            )
-    timestamp = frontmatter.get("timestamp")
-    if timestamp is not None and not isinstance(timestamp, (datetime, date)):
-        try:
-            datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
-        except ValueError:
-            issues.append(_issue("invalid_timestamp", "timestamp must be ISO 8601", path=relative, rule_id="profile"))
-    return issues
+def _real_directory(path: Path, label: str, issues: list[dict[str, Any]]) -> bool:
+    metadata = _lstat(path, label, issues)
+    if metadata is None:
+        return False
+    if is_reparse_metadata(metadata) or not stat.S_ISDIR(metadata.st_mode):
+        issues.append(issue("real_directory_required", "Entry must be a real directory", path=label))
+        return False
+    return True
 
 
-def _native_profile_document_issues(frontmatter: Mapping[str, Any], body: str, relative: str) -> list[dict[str, Any]]:
-    if relative != "profiles/cortex-v1.md":
-        return []
-    issues: list[dict[str, Any]] = []
-    expected_fields = {"type", "title", "description", "tags", "timestamp"}
-    if set(frontmatter) != expected_fields:
-        issues.append(_issue("invalid_native_profile", "Native profile frontmatter must have exactly five fields", path=relative, rule_id="profile"))
-    if frontmatter.get("type") != "profile" or not isinstance(frontmatter.get("title"), str) or not str(frontmatter.get("title")).strip():
-        issues.append(_issue("invalid_native_profile", "Native profile type/title are invalid", path=relative, rule_id="profile"))
-    if frontmatter.get("description") != "" or frontmatter.get("tags") != [] or str(frontmatter.get("timestamp")) != "2026-07-17":
-        issues.append(_issue("invalid_native_profile", "Native profile fixed metadata is invalid", path=relative, rule_id="profile"))
-    for marker in ("Profile: cortex-native-v1", "Tag schema: profiles/policy/tag-schema.json"):
-        if marker not in body.splitlines():
-            issues.append(_issue("invalid_native_profile_marker", "Native profile marker is missing", path=relative, rule_id="profile", details=[{"name":"marker","value":marker}]))
-    return issues
+def _ordinary_file(path: Path, label: str, issues: list[dict[str, Any]]) -> bool:
+    metadata = _lstat(path, label, issues)
+    if metadata is None:
+        return False
+    if is_reparse_metadata(metadata) or not stat.S_ISREG(metadata.st_mode):
+        issues.append(issue("ordinary_file_required", "Entry must be an ordinary file", path=label))
+        return False
+    return True
 
 
-def _policy_issues(frontmatter: Mapping[str, Any], relative: str, policy: EffectivePolicy) -> list[dict[str, Any]]:
-    """Apply only generic, package-declared policy requirements.
-
-    Domain naming, tag vocabulary, and registry semantics intentionally stay in
-    the portable package rather than being hard-coded in Cortex.
-    """
-
-    if policy.state != "valid" or policy.manifest is None:
-        return []
-    issues: list[dict[str, Any]] = []
-    for field in policy.manifest.get("required_frontmatter_fields", []):
-        value = frontmatter.get(str(field))
-        if value is None or (isinstance(value, str) and not value.strip()):
-            issues.append(
-                _issue(
-                    "missing_policy_field",
-                    f"Policy package requires non-empty {field}",
-                    path=relative,
-                    rule_id="policy",
-                    details=[{"name": "field", "value": str(field)}],
-                )
-            )
-    return issues
+def _read_owned_json(path: Path, label: str, issues: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, bytes | None]:
+    if not _ordinary_file(path, label, issues):
+        return None, None
+    try:
+        payload = path.read_bytes()
+        return loads_object(payload, label=label), payload
+    except CortexError as exc:
+        issues.append(exc.as_issue())
+    except OSError as exc:
+        issues.append(issue("file_unreadable", "File could not be read", path=label, os_error=str(exc)))
+    return None, None
 
 
-def _canonical_reference_issues(
-    frontmatter: Mapping[str, Any],
-    relative: str,
-    schema: TagSchema | None,
-) -> list[dict[str, Any]]:
-    if schema is None or schema.statuses.get("reference") != "active" or not relative.startswith("references/"):
-        return []
-    issues: list[dict[str, Any]] = []
-    expected_fields = {"type", "title", "description", "tags", "timestamp"}
-    if set(frontmatter) != expected_fields:
-        issues.append(_issue("noncanonical_frontmatter", "Reference frontmatter must have exactly five fields", path=relative, rule_id="policy"))
-    stem = Path(relative).stem
-    if frontmatter.get("type") != "reference":
-        issues.append(_issue("invalid_reference_type", "Reference type must be canonical lowercase reference", path=relative, rule_id="policy"))
-    if frontmatter.get("title") != stem:
-        issues.append(_issue("invalid_reference_title", "Reference title must equal the filename stem", path=relative, rule_id="policy"))
-    if frontmatter.get("description") != "":
-        issues.append(_issue("invalid_reference_description", "Reference description must be empty", path=relative, rule_id="policy"))
-    timestamp = frontmatter.get("timestamp")
-    valid_timestamp = False
-    if isinstance(timestamp, datetime):
-        valid_timestamp = timestamp.tzinfo is not None and timestamp.utcoffset() is not None
-    elif isinstance(timestamp, date):
-        valid_timestamp = True
-    elif isinstance(timestamp, str) and timestamp.strip():
-        try:
-            text = timestamp.strip()
-            if "T" in text or " " in text:
-                parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-                valid_timestamp = parsed.tzinfo is not None and parsed.utcoffset() is not None
-            else:
-                date.fromisoformat(text)
-                valid_timestamp = True
-        except ValueError:
-            valid_timestamp = False
-    if not valid_timestamp:
-        issues.append(_issue("invalid_timestamp", "Reference timestamp must be an ISO date or timezone-aware datetime", path=relative, rule_id="policy"))
-    tags = frontmatter.get("tags")
-    project = next((item for item in schema.dimensions if item.name == "project"), None)
-    if project is None or not isinstance(tags, list) or len(tags) != 2 or any(not isinstance(item, str) for item in tags):
-        issues.append(_issue("invalid_reference_tags", "Reference tags must be the exact canonical pair", path=relative, rule_id="policy"))
-    else:
-        try:
-            selected = resolve_tag_value(project, tags[0])
-            if tags != [selected.tag, *selected.derived_tags]:
-                raise ValueError
-            if not stem.startswith(selected.tag + "-"):
-                issues.append(_issue("invalid_reference_filename", "Reference filename must begin with its identifier tag", path=relative, rule_id="policy"))
-        except (CortexError, ValueError):
-            issues.append(_issue("invalid_reference_tags", "Reference tags do not match the tag schema", path=relative, rule_id="policy"))
-    match = _REFERENCE_DATE_SUFFIX.search(stem)
-    if match is None:
-        issues.append(_issue("invalid_reference_filename", "Reference filename must end in YYYYMMDD", path=relative, rule_id="policy"))
-    else:
-        try:
-            datetime.strptime(match.group(1), "%Y%m%d")
-        except ValueError:
-            issues.append(_issue("invalid_reference_filename", "Reference filename date is not a real date", path=relative, rule_id="policy"))
-    return issues
+def _component_issues(name: str, label: str, issues: list[dict[str, Any]]) -> None:
+    problem = component_problem(name)
+    if problem is not None:
+        issues.append(issue(problem[0], problem[1], path=label))
 
 
-def _shape_issues(root: Path) -> list[dict[str, Any]]:
-    issues: list[dict[str, Any]] = []
-    for relative in _PROFILE_REQUIRED_PATHS:
-        target = root.joinpath(*relative.split("/"))
-        if not target.exists():
-            issues.append(_issue("missing_profile_path", "Cortex bundle profile path is missing", path=relative, rule_id="profile"))
-    return issues
+def _validate_opaque_tree(root: Path, label: str, issues: list[dict[str, Any]]) -> None:
+    collisions: dict[str, str] = {}
 
-
-def discover_cortex_profile(root: str | Path) -> str:
-    """Return the validation profile declared by the canonical bundle.
-
-    Bundles created before the explicit marker was introduced retain the
-    authoring profile.  Imported bundles declare ``cortex-import-v1`` in the
-    self-describing profile document.
-    """
-
-    bundle = Path(root)
-    marker_path = bundle / "profiles" / "cortex-v1.md"
-    if not marker_path.is_file() or marker_path.is_symlink():
-        return AUTHORING_PROFILE
-    text = _read_text(marker_path, "profiles/cortex-v1.md")
-    match = _PROFILE_MARKER.search(text)
-    return match.group(1) if match is not None else AUTHORING_PROFILE
-
-
-def _closure_issues(root: Path, markdown_paths: list[Path], *, profile: str | None) -> list[dict[str, Any]]:
-    issues: list[dict[str, Any]] = []
-    for path in markdown_paths:
-        relative = path.relative_to(root).as_posix()
-        try:
-            text = _read_text(path, relative)
-        except CortexError:
-            continue
-        for destination in extract_markdown_links(text):
-            try:
-                target = resolve_internal_link(root, relative, destination)
-            except CortexError as exc:
-                severity = "warning" if profile == IMPORT_PROFILE and relative not in {"index.md", "log.md"} else "error"
-                issues.append(_issue(exc.code, str(exc), path=relative, severity=severity, rule_id="closure"))
-                continue
-            if target is None:
-                continue
-            native_target = _native_path(target)
-            if not os.path.exists(native_target) or os.path.islink(native_target):
-                severity = "warning" if profile == IMPORT_PROFILE and relative not in {"index.md", "log.md"} else "error"
+    def visit(directory: Path, prefix: str = "") -> None:
+        for entry in _scan(directory, f"{label}/{prefix}".rstrip("/"), issues):
+            relative = f"{prefix}/{entry.name}" if prefix else entry.name
+            path_label = f"{label}/{relative}"
+            _component_issues(entry.name, path_label, issues)
+            key = relative.casefold()
+            previous = collisions.get(key)
+            if previous is not None and previous != relative:
                 issues.append(
-                    _issue(
-                        "broken_internal_link",
-                        "Internal bundle link does not resolve to a real file",
-                        path=relative,
-                        severity=severity,
-                        rule_id="closure",
-                        details=[{"name": "target", "value": destination}],
+                    issue(
+                        "conversion_casefold_collision",
+                        "Conversion paths collide under case folding",
+                        path=label,
+                        paths=[previous, relative],
                     )
                 )
+            collisions[key] = relative
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                issues.append(issue("path_unreadable", "Entry could not be inspected", path=path_label, os_error=str(exc)))
+                continue
+            if is_reparse_metadata(metadata):
+                issues.append(issue("reparse_path", "Symlinks and reparse points are forbidden", path=path_label))
+            elif stat.S_ISDIR(metadata.st_mode):
+                visit(Path(entry.path), relative)
+            elif not stat.S_ISREG(metadata.st_mode):
+                issues.append(issue("nonregular_entry", "Only ordinary files and real directories are allowed", path=path_label))
+
+    visit(root)
+
+
+def validate_record_directory(
+    record_dir: Path,
+    folder: str,
+    *,
+    registered: set[str],
+    maximum: int,
+    label_root: str,
+    check_folder: bool = True,
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    label = f"{label_root}/{folder}"
+    if check_folder:
+        _component_issues(folder, label, issues)
+        try:
+            too_long = len(folder.encode("utf-8")) > maximum
+        except UnicodeEncodeError:
+            too_long = True
+        if too_long:
+            issues.append(issue("record_folder_too_long", "Record folder exceeds max_component_length", path=label))
+    if not _real_directory(record_dir, label, issues):
+        return issues
+
+    children = _scan(record_dir, label, issues)
+    names = {entry.name for entry in children}
+    expected = {"record.json", "original"}
+    for missing in sorted(expected - names):
+        issues.append(issue("missing_record_entry", f"Record entry is missing: {missing}", path=f"{label}/{missing}"))
+    for extra in sorted(names - expected - {"representations"}):
+        issues.append(issue("unexpected_record_entry", "Record folder contains an unexpected entry", path=f"{label}/{extra}"))
+
+    record_value: dict[str, Any] | None = None
+    record_payload: bytes | None = None
+    if "record.json" in names:
+        record_value, record_payload = _read_owned_json(record_dir / "record.json", f"{label}/record.json", issues)
+    if record_value is not None:
+        issues.extend(validate_record(record_value, registered, label=f"{label}/record.json"))
+        if record_payload != json_bytes(record_value):
+            issues.append(issue("noncanonical_record_json", "record.json must use two spaces, LF, fixed field order, and a trailing newline", path=f"{label}/record.json"))
+
+    original = record_dir / "original"
+    if "original" in names and _real_directory(original, f"{label}/original", issues):
+        original_entries = _scan(original, f"{label}/original", issues)
+        if len(original_entries) != 1:
+            issues.append(issue("invalid_original", "original must contain exactly one source file", path=f"{label}/original"))
+        for entry in original_entries:
+            _component_issues(entry.name, f"{label}/original/{entry.name}", issues)
+            try:
+                metadata = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                issues.append(issue("path_unreadable", "Original entry could not be inspected", path=f"{label}/original/{entry.name}", os_error=str(exc)))
+                continue
+            if is_reparse_metadata(metadata) or not stat.S_ISREG(metadata.st_mode):
+                issues.append(issue("ordinary_file_required", "Original entry must be an ordinary file", path=f"{label}/original/{entry.name}"))
+
+    representations = record_dir / "representations"
+    if "representations" in names and _real_directory(representations, f"{label}/representations", issues):
+        representation_entries = _scan(representations, f"{label}/representations", issues)
+        representation_names = {entry.name for entry in representation_entries}
+        if representation_names != {"markdown-conversion"}:
+            for missing in sorted({"markdown-conversion"} - representation_names):
+                issues.append(issue("missing_conversion_root", "markdown-conversion directory is missing", path=f"{label}/representations/{missing}"))
+            for extra in sorted(representation_names - {"markdown-conversion"}):
+                issues.append(issue("unexpected_representation", "Unexpected representation namespace", path=f"{label}/representations/{extra}"))
+        conversion = representations / "markdown-conversion"
+        if "markdown-conversion" in representation_names and _real_directory(conversion, f"{label}/representations/markdown-conversion", issues):
+            _validate_opaque_tree(conversion, f"{label}/representations/markdown-conversion", issues)
     return issues
 
 
-def _logical_target(root: Path, content_digest: str, target_id: str | None) -> dict[str, str]:
-    identifier = target_id or re.sub(r"[^A-Za-z0-9._-]+", "-", root.name).strip("-") or "bundle"
-    return {
-        "id": identifier,
-        "format": "okf-0.1",
-        "path": f"bundles/{identifier}",
-        "adapter": "okf-native-v1",
-        "content_digest": content_digest,
-        "state_namespace": f"{identifier}--sha256-{content_digest}",
-    }
-
-
-def validate_bundle(
-    bundle_root: str | Path,
-    *,
-    profile: str | None = None,
-    check_closure: bool = False,
-    strict_health: bool = False,
-    target_id: str | None = None,
-    effective_policy: EffectivePolicy | None = None,
-) -> dict[str, Any]:
-    """Return a content-addressed ValidationReport for one local OKF bundle.
-
-    Broken links are tolerated by plain OKF conformance, as required by the
-    upstream specification.  They become hard errors only for closure or
-    strict-health validation.
-    """
-
-    root = Path(bundle_root)
-    if not root.exists() or not root.is_dir() or root.is_symlink():
-        raise CortexError(
-            "Bundle root must be an existing real directory",
-            status=Status.VALIDATION_BLOCKED,
-            code="invalid_bundle_root",
-            details={"path": str(root)},
-        )
-    root = root.resolve()
-    policy = effective_policy or resolve_effective_policy(root)
+def validate_workspace(workspace: Path, *, locked_record_schema: bytes | None = None) -> ValidationReport:
+    workspace = Path(os.path.abspath(workspace))
     issues: list[dict[str, Any]] = []
-    tag_schema: TagSchema | None = None
-    if policy.state == "invalid":
-        issues.append(
-            _issue(
-                "invalid_policy_package",
-                policy.error or "Policy package is invalid",
-                path=policy.manifest_path,
-                severity="blocker",
-                rule_id="policy",
-            )
-        )
-    elif policy.state == "valid":
-        try:
-            tag_schema = load_tag_schema(root, policy)
-        except CortexError as exc:
-            issues.append(_issue(exc.code, str(exc), path=policy.manifest_path, severity="blocker", rule_id="policy"))
-    try:
-        manifest = tree_manifest(root)
-        content_digest = manifest["tree_digest"]
-    except CortexError as exc:
-        content_digest = sha256_digest(b"")
-        issues.append(_issue(exc.code, str(exc), path=exc.details.get("path"), severity="blocker", rule_id="health"))
+    metadata = _lstat(workspace, ".", issues)
+    if metadata is None:
+        return ValidationReport(issues=[issue("workspace_not_initialized", "Workspace does not exist", path=".")], count=0, tags=None, layout=None)
+    if is_reparse_metadata(metadata) or not stat.S_ISDIR(metadata.st_mode):
+        return ValidationReport(issues=[issue("workspace_not_directory", "Workspace must be a real directory", path=".")], count=0, tags=None, layout=None)
 
-    # Package-owned Markdown (for example a naming guide) is policy data, not
-    # an OKF concept.  Its existence and bytes are already authenticated by
-    # the native manifest, so do not impose concept frontmatter on it.
-    policy_paths = {
-        str(item["path"])
-        for item in (policy.manifest or {}).get("files", ())
-        if isinstance(item, Mapping) and isinstance(item.get("path"), str)
-    }
-    markdown_paths = sorted(
-        (path for path in root.rglob("*.md") if path.relative_to(root).as_posix() not in policy_paths),
-        key=lambda item: item.relative_to(root).as_posix().encode("utf-8"),
-    )
-    collision_keys: dict[str, str] = {}
-    for path in markdown_paths:
-        relative = path.relative_to(root).as_posix()
-        if path.is_symlink():
-            issues.append(_issue("symlink_escape", "Symbolic links are forbidden", path=relative, severity="blocker", rule_id="health"))
-            continue
-        try:
-            normalized = normalize_relative_path(relative)
-        except CortexError as exc:
-            issues.append(_issue(exc.code, str(exc), path=relative, severity="blocker", rule_id="health"))
-            continue
-        if normalized != relative or unicodedata.normalize("NFC", relative) != relative:
-            issues.append(_issue("noncanonical_path", "Bundle paths must already be NFC POSIX paths", path=relative, rule_id="health"))
-        key = collision_key(relative)
-        previous = collision_keys.get(key)
-        if previous is not None and previous != relative:
-            issues.append(
-                _issue(
-                    "path_collision",
-                    "Bundle paths collide under cross-platform case folding",
-                    path=relative,
-                    severity="blocker",
-                    rule_id="health",
-                    details=[{"name": "other", "value": previous}],
+    root_entries = _scan(workspace, ".", issues)
+    root_names = {entry.name for entry in root_entries}
+    profiles = workspace / "profiles"
+    tags_value: dict[str, Any] | None = None
+    layout_value: dict[str, Any] | None = None
+
+    if "profiles" not in root_names:
+        issues.append(issue("missing_profiles", "profiles directory is missing", path="profiles"))
+    elif _real_directory(profiles, "profiles", issues):
+        profile_entries = _scan(profiles, "profiles", issues)
+        profile_names = {entry.name for entry in profile_entries}
+        for missing in sorted(set(PROFILE_FILENAMES) - profile_names):
+            issues.append(issue("missing_profile", "Required profile is missing", path=f"profiles/{missing}"))
+        for extra in sorted(profile_names - set(PROFILE_FILENAMES)):
+            issues.append(issue("unexpected_profile", "Unexpected profile entry", path=f"profiles/{extra}"))
+
+        if "record-schema.json" in profile_names:
+            if locked_record_schema is None:
+                value, payload = _read_owned_json(profiles / "record-schema.json", "profiles/record-schema.json", issues)
+            else:
+                if _ordinary_file(profiles / "record-schema.json", "profiles/record-schema.json", issues):
+                    payload = locked_record_schema
+                    try:
+                        value = loads_object(payload, label="profiles/record-schema.json")
+                    except CortexError as exc:
+                        issues.append(exc.as_issue())
+                        value = None
+                else:
+                    value, payload = None, None
+            if value is not None:
+                issues.extend(validate_record_schema(value))
+                if payload != json_bytes(RECORD_SCHEMA):
+                    issues.append(issue("noncanonical_record_schema", "record-schema.json bytes do not match the fixed profile", path="profiles/record-schema.json"))
+        if "tags.json" in profile_names:
+            tags_value, _ = _read_owned_json(profiles / "tags.json", "profiles/tags.json", issues)
+            if tags_value is not None:
+                issues.extend(validate_tags_profile(tags_value))
+        if "layout.json" in profile_names:
+            layout_value, _ = _read_owned_json(profiles / "layout.json", "profiles/layout.json", issues)
+            if layout_value is not None:
+                issues.extend(validate_layout_profile(layout_value))
+
+    layout_valid = layout_value is not None and not validate_layout_profile(layout_value)
+    records_root_name = layout_value["records_root"] if layout_valid else DEFAULT_LAYOUT["records_root"]
+    allowed_root = {"profiles", records_root_name}
+    for extra in sorted(root_names - allowed_root):
+        issues.append(issue("unexpected_workspace_entry", "Workspace contains an unexpected root entry", path=extra))
+    if records_root_name not in root_names:
+        issues.append(issue("missing_records_root", "Configured records root is missing", path=records_root_name))
+
+    count = 0
+    registered: set[str] = set()
+    if tags_value is not None and not validate_tags_profile(tags_value):
+        registered = {item["tag"] for item in tags_value["tags"]}
+    maximum = layout_value["max_component_length"] if layout_valid else DEFAULT_LAYOUT["max_component_length"]
+    records_root = workspace / records_root_name
+    if records_root_name in root_names and _real_directory(records_root, records_root_name, issues):
+        record_entries = _scan(records_root, records_root_name, issues)
+        collisions: dict[str, str] = {}
+        for entry in record_entries:
+            label = f"{records_root_name}/{entry.name}"
+            try:
+                entry_metadata = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                issues.append(issue("path_unreadable", "Record entry could not be inspected", path=label, os_error=str(exc)))
+                continue
+            if is_reparse_metadata(entry_metadata) or not stat.S_ISDIR(entry_metadata.st_mode):
+                issues.append(issue("flat_record_directory_required", "Records root may contain only real record directories", path=label))
+                continue
+            count += 1
+            key = entry.name.casefold()
+            previous = collisions.get(key)
+            if previous is not None and previous != entry.name:
+                issues.append(issue("record_casefold_collision", "Record folders collide under case folding", path=records_root_name, names=[previous, entry.name]))
+            collisions[key] = entry.name
+            issues.extend(
+                validate_record_directory(
+                    Path(entry.path),
+                    entry.name,
+                    registered=registered,
+                    maximum=maximum,
+                    label_root=records_root_name,
                 )
             )
-        collision_keys[key] = relative
-        if path.name.casefold() in RESERVED_FILENAMES:
-            issues.extend(_reserved_issues(root, path, relative))
-            continue
-        try:
-            concept = parse_concept(path, bundle_root=root)
-        except CortexError as exc:
-            issues.append(_issue(exc.code, str(exc), path=relative, rule_id="okf"))
-            continue
-        issues.extend(_profile_issues(concept.frontmatter, relative, profile))
-        if profile == NATIVE_PROFILE:
-            issues.extend(_native_profile_document_issues(concept.frontmatter, concept.body, relative))
-        issues.extend(_policy_issues(concept.frontmatter, relative, policy))
-        issues.extend(_canonical_reference_issues(concept.frontmatter, relative, tag_schema))
-
-    try:
-        version = discover_bundle_version(root)
-        if version is not None and version != SUPPORTED_OKF_VERSION:
-            issues.append(
-                _issue(
-                    "unsupported_okf_version",
-                    f"Declared OKF version {version} is not supported",
-                    path="index.md",
-                    severity="error",
-                    rule_id="version",
-                )
-            )
-    except CortexError as exc:
-        issues.append(_issue(exc.code, str(exc), path="index.md", rule_id="okf"))
-
-    if profile is not None:
-        issues.extend(_shape_issues(root))
-    if profile == NATIVE_PROFILE:
-        expected_profile_files = {
-            "profiles/cortex-v1.md",
-            "profiles/policy-package.json",
-            "profiles/policy/tag-schema.json",
-        }
-        observed_profile_files = {
-            path.relative_to(root).as_posix()
-            for path in (root / "profiles").rglob("*")
-            if path.is_file()
-        }
-        for extra in sorted(observed_profile_files - expected_profile_files):
-            issues.append(_issue("unexpected_policy_file", "Native profile contains a legacy or duplicate policy file", path=extra, rule_id="policy"))
-        for missing in sorted(expected_profile_files - observed_profile_files):
-            issues.append(_issue("missing_policy_file", "Native profile file is missing", path=missing, rule_id="policy"))
-    if check_closure or strict_health:
-        issues.extend(_closure_issues(root, markdown_paths, profile=profile))
-    for forbidden in (root / ".cortex", root / "cortex.yaml"):
-        if forbidden.exists():
-            issues.append(
-                _issue(
-                    "managed_state_in_bundle",
-                    "Bundle must remain self-describing without Cortex managed state",
-                    path=forbidden.relative_to(root).as_posix(),
-                    severity="blocker",
-                    rule_id="closure",
-                )
-            )
-
-    errors = sum(issue["severity"] in {"blocker", "error"} for issue in issues)
-    warnings = sum(issue["severity"] == "warning" for issue in issues)
-    infos = sum(issue["severity"] == "info" for issue in issues)
-    if profile is not None and (check_closure or strict_health):
-        mode = "full"
-    elif profile is not None:
-        mode = "profile"
-    elif check_closure:
-        mode = "closure"
-    elif strict_health:
-        mode = "health"
-    else:
-        mode = "okf"
-    rules = ["okf-0.1"]
-    if profile:
-        rules.append(profile)
-    if check_closure:
-        rules.append("standalone-closure")
-    if strict_health:
-        rules.append("strict-health")
-    payload = {
-        "target": _logical_target(root, content_digest, target_id),
-        "validated_content_digest": content_digest,
-        "effective_policy": policy.report_value(),
-        "mode": mode,
-        "rules": rules,
-        "outcome": "fail" if errors else "pass",
-        "counts": {"errors": errors, "warnings": warnings, "infos": infos, "files": len(markdown_paths)},
-        "issues": issues,
-    }
-    return make_artifact("validation-report", payload)
+    return ValidationReport(issues=issues, count=count, tags=tags_value, layout=layout_value)
 
 
-def require_valid_bundle(bundle_root: str | Path, **options: Any) -> dict[str, Any]:
-    """Validate and raise a stable validation-blocked error on failure."""
-
-    report = validate_bundle(bundle_root, **options)
-    if report["outcome"] != "pass":
-        raise CortexError(
-            "Bundle validation failed",
-            status=Status.VALIDATION_BLOCKED,
-            code="bundle_validation_failed",
-            details={"report": report["artifact_id"], "errors": report["counts"]["errors"]},
-        )
-    return report
-
-
-__all__ = [
-    "AUTHORING_PROFILE",
-    "IMPORT_PROFILE",
-    "NATIVE_PROFILE",
-    "discover_cortex_profile",
-    "require_valid_bundle",
-    "validate_bundle",
-]
+__all__ = ["ValidationReport", "validate_record_directory", "validate_workspace"]

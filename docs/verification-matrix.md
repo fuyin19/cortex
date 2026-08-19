@@ -1,17 +1,16 @@
-# Cortex 4 verification matrix
+# Cortex 5 verification matrix
 
-| Surface | Required evidence |
+| Scenario | Evidence |
 |---|---|
-| Public surface | one method ID/version, nine exact routes/features and twelve closed schemas |
-| stdin/output | strict UTF-8 JSON, duplicate/TTY/EOF/size guards, one envelope, copyable human commands |
-| draft/canonical bytes | exact draft fields, deterministic filename/frontmatter/tags, source immutability |
-| proposal lineage | exact source/order coverage, supplied candidates only, stale source/tree/schema rejection |
-| links | bounded root-level forms, exact sanitization, opaque code/HTML, fail-closed container and ambiguous contexts |
-| conflicts | complete current conflict set, whole-file diffs, no suffix or implicit overwrite |
-| native paths | handle identity, reparse rejection, aliases, extended paths, capacity and same volume |
-| transaction | one-use claim, every fault boundary, exact resume, backup recheck, ambiguity preservation |
-| validation | OKF index, schema, canonical references, tag order/path/title and closure for the declared link dialect |
-| maintenance | direct compatible config, structural/link repair, canonical rename/retag and external index |
-| package hygiene | two skills, version agreement, closed packaged registry and no removed surface residue |
+| init and closed CLI | exact four-part tree; seven business routes; direct Result/status mapping |
+| metadata | exact record fields; strict timestamp/tags; generated UTC; canonical JSON bytes |
+| naming and layout | Unicode slug, UTF-8 cap, case-fold collision, suffix/reject, edit without move |
+| profiles | fixed record schema; ordered exact tags; complete tags/layout replacement; no orphaning |
+| custody | source and conversion file/directory bytes; relative paths and empty directories preserved |
+| safety | no symlink/reparse/nonregular/unsafe/reserved/colliding paths; opaque nested content accepted |
+| concurrency | add, edit, tag set, and layout set return deterministic `busy/5` under the one lock |
+| failure atomicity | validation failures preserve valid state; staged add cleanup; atomic file replacement |
+| read behavior | status and validate are side-effect free and report version/valid/count/full issues |
+| hygiene | v5 version/package agreement; no v4 schemas, OKF, transaction, artifact, or removed route residue |
 
-The terminal evidence is a fresh full `python -m pytest`, schema/method checks, compileall, hygiene search, diff check and worktree status.
+Terminal verification is a fresh `python -m pytest` followed by `python -m compileall -q src tests`.

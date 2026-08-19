@@ -1,5 +1,5 @@
 {
-  "name": "cortex",
-  "version": "4.0.0",
-  "description": "Single-bundle OKF reference ingest and deterministic maintenance."
+  "name": "cortex-record-kb",
+  "version": "5.0.0",
+  "description": "Minimal single-writer record knowledge base."
 }

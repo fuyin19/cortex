@@ -1,12 +1,7 @@
-# Keep source and fixture bytes portable across Windows, macOS, and Linux.
+# Keep source, tests, fixtures, and documentation portable.
 * text=auto
 *.py text eol=lf
 *.json text eol=lf
 *.md text eol=lf
-*.yaml text eol=lf
-*.yml text eol=lf
+*.toml text eol=lf
 *.sh text eol=lf
-
-# Vendored upstream OKF inputs are byte-pinned in upstream/okf/manifest.json.
-# Prevent any text conversion from invalidating their recorded digests.
-/upstream/okf/** -text

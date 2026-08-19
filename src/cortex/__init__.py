@@ -1,5 +1,7 @@
-"""Cortex 4 OKF workspace package."""
+"""Cortex 5 minimal single-writer record knowledge base."""
 
-__version__ = "4.0.0"
+from .constants import VERSION
+
+__version__ = VERSION
 
 __all__ = ["__version__"]
