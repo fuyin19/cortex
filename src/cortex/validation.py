@@ -8,11 +8,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .constants import DEFAULT_LAYOUT, PROFILE_FILENAMES, RECORD_SCHEMA
+from .constants import PROFILE_FILENAMES, RECORD_FIELDS, RECORD_SCHEMA
 from .errors import CortexError, issue
 from .jsonio import json_bytes, loads_object
 from .native import component_problem, is_reparse_metadata, native_path
-from .profiles import validate_layout_profile, validate_record, validate_record_schema, validate_tags_profile
+from .profiles import (
+    registered_tags,
+    tag_groups,
+    validate_layout_profile,
+    validate_record,
+    validate_record_schema,
+    validate_tags_profile,
+)
 
 
 @dataclass
@@ -76,6 +83,14 @@ def _read_owned_json(path: Path, label: str, issues: list[dict[str, Any]]) -> tu
     return None, None
 
 
+def _canonical_json_matches(value: dict[str, Any], payload: bytes | None, label: str, issues: list[dict[str, Any]]) -> bool:
+    try:
+        return payload == json_bytes(value)
+    except UnicodeEncodeError:
+        issues.append(issue("invalid_utf8_text", "JSON contains text that is not valid UTF-8", path=label))
+        return False
+
+
 def _component_issues(name: str, label: str, issues: list[dict[str, Any]]) -> None:
     problem = component_problem(name)
     if problem is not None:
@@ -124,6 +139,8 @@ def validate_record_directory(
     registered: set[str],
     maximum: int,
     label_root: str,
+    partition_tags: set[str] | None = None,
+    expected_partition: str | None = None,
     check_folder: bool = True,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
@@ -153,7 +170,29 @@ def validate_record_directory(
         record_value, record_payload = _read_owned_json(record_dir / "record.json", f"{label}/record.json", issues)
     if record_value is not None:
         issues.extend(validate_record(record_value, registered, label=f"{label}/record.json"))
-        if record_payload != json_bytes(record_value):
+        if partition_tags is not None and expected_partition is not None and isinstance(record_value.get("tags"), list):
+            selected = [tag for tag in record_value["tags"] if tag in partition_tags]
+            if len(selected) != 1:
+                issues.append(
+                    issue(
+                        "partition_tag_count",
+                        "Record must contain exactly one tag from the configured partition group",
+                        path=f"{label}/record.json#/tags",
+                        tags=selected,
+                    )
+                )
+            elif selected[0] != expected_partition:
+                issues.append(
+                    issue(
+                        "partition_path_mismatch",
+                        "Record partition tag must equal its parent directory",
+                        path=f"{label}/record.json#/tags",
+                        expected=expected_partition,
+                        actual=selected[0],
+                    )
+                )
+        canonical_record = {field: record_value.get(field) for field in RECORD_FIELDS}
+        if not _canonical_json_matches(canonical_record, record_payload, f"{label}/record.json", issues):
             issues.append(issue("noncanonical_record_json", "record.json must use two spaces, LF, fixed field order, and a trailing newline", path=f"{label}/record.json"))
 
     original = record_dir / "original"
@@ -186,7 +225,13 @@ def validate_record_directory(
     return issues
 
 
-def validate_workspace(workspace: Path, *, locked_record_schema: bytes | None = None) -> ValidationReport:
+def validate_workspace(
+    workspace: Path,
+    *,
+    locked_record_schema: bytes | None = None,
+    tags_override: dict[str, Any] | None = None,
+    layout_override: dict[str, Any] | None = None,
+) -> ValidationReport:
     workspace = Path(os.path.abspath(workspace))
     issues: list[dict[str, Any]] = []
     metadata = _lstat(workspace, ".", issues)
@@ -229,54 +274,115 @@ def validate_workspace(workspace: Path, *, locked_record_schema: bytes | None = 
                 if payload != json_bytes(RECORD_SCHEMA):
                     issues.append(issue("noncanonical_record_schema", "record-schema.json bytes do not match the fixed profile", path="profiles/record-schema.json"))
         if "tags.json" in profile_names:
-            tags_value, _ = _read_owned_json(profiles / "tags.json", "profiles/tags.json", issues)
+            disk_tags, tags_payload = _read_owned_json(profiles / "tags.json", "profiles/tags.json", issues)
+            tags_value = tags_override if tags_override is not None else disk_tags
             if tags_value is not None:
                 issues.extend(validate_tags_profile(tags_value))
+                if tags_override is None and not _canonical_json_matches(tags_value, tags_payload, "profiles/tags.json", issues):
+                    issues.append(issue("noncanonical_profile_json", "tags.json must use canonical Cortex JSON", path="profiles/tags.json"))
         if "layout.json" in profile_names:
-            layout_value, _ = _read_owned_json(profiles / "layout.json", "profiles/layout.json", issues)
+            disk_layout, layout_payload = _read_owned_json(profiles / "layout.json", "profiles/layout.json", issues)
+            layout_value = layout_override if layout_override is not None else disk_layout
             if layout_value is not None:
                 issues.extend(validate_layout_profile(layout_value))
+                if layout_override is None and not _canonical_json_matches(layout_value, layout_payload, "profiles/layout.json", issues):
+                    issues.append(issue("noncanonical_profile_json", "layout.json must use canonical Cortex JSON", path="profiles/layout.json"))
 
+    tags_valid = tags_value is not None and not validate_tags_profile(tags_value)
     layout_valid = layout_value is not None and not validate_layout_profile(layout_value)
-    records_root_name = layout_value["records_root"] if layout_valid else DEFAULT_LAYOUT["records_root"]
-    allowed_root = {"profiles", records_root_name}
-    for extra in sorted(root_names - allowed_root):
-        issues.append(issue("unexpected_workspace_entry", "Workspace contains an unexpected root entry", path=extra))
-    if records_root_name not in root_names:
-        issues.append(issue("missing_records_root", "Configured records root is missing", path=records_root_name))
-
     count = 0
-    registered: set[str] = set()
-    if tags_value is not None and not validate_tags_profile(tags_value):
-        registered = {item["tag"] for item in tags_value["tags"]}
-    maximum = layout_value["max_component_length"] if layout_valid else DEFAULT_LAYOUT["max_component_length"]
-    records_root = workspace / records_root_name
-    if records_root_name in root_names and _real_directory(records_root, records_root_name, issues):
-        record_entries = _scan(records_root, records_root_name, issues)
-        collisions: dict[str, str] = {}
-        for entry in record_entries:
-            label = f"{records_root_name}/{entry.name}"
+    root_children = sorted(root_names - {"profiles"})
+    if not tags_valid or not layout_valid:
+        for extra in root_children:
+            issues.append(issue("unexpected_workspace_entry", "Workspace contains an unexpected root entry", path=extra))
+        return ValidationReport(issues=issues, count=count, tags=tags_value, layout=layout_value)
+
+    assert tags_value is not None and layout_value is not None
+    groups = tag_groups(tags_value)
+    all_registered = registered_tags(tags_value)
+    partition_by = layout_value["partition_by"]
+    maximum = layout_value["max_component_length"]
+    if partition_by is None:
+        for extra in root_children:
+            issues.append(issue("unconfigured_bundle_content", "An unconfigured bundle may contain only profiles", path=extra))
+        return ValidationReport(issues=issues, count=count, tags=tags_value, layout=layout_value)
+    if partition_by not in groups:
+        issues.append(
+            issue(
+                "unknown_partition_group",
+                "partition_by must name an existing tag group",
+                path="profiles/layout.json#/partition_by",
+                group=partition_by,
+            )
+        )
+        for extra in root_children:
+            issues.append(issue("unexpected_workspace_entry", "Workspace contains an unexpected root entry", path=extra))
+        return ValidationReport(issues=issues, count=count, tags=tags_value, layout=layout_value)
+
+    partition_names = [item["tag"] for item in groups[partition_by]]
+    partition_tags = set(partition_names)
+    folded_partitions: dict[str, str] = {}
+    for tag in partition_names:
+        problem = component_problem(tag, allow_profiles=False)
+        if problem is not None:
+            issues.append(issue(problem[0], problem[1], path="profiles/tags.json", tag=tag))
+        try:
+            too_long = len(tag.encode("utf-8")) > maximum
+        except UnicodeEncodeError:
+            too_long = True
+        if too_long:
+            issues.append(issue("partition_name_too_long", "Partition tag exceeds max_component_length", path="profiles/tags.json", tag=tag))
+        key = tag.casefold()
+        previous = folded_partitions.get(key)
+        if previous is not None and previous != tag:
+            issues.append(issue("partition_casefold_collision", "Partition tags collide under case folding", path="profiles/tags.json", tags=[previous, tag]))
+        folded_partitions[key] = tag
+
+    for partition_entry in root_entries:
+        if partition_entry.name == "profiles":
+            continue
+        partition_label = partition_entry.name
+        try:
+            partition_metadata = partition_entry.stat(follow_symlinks=False)
+        except OSError as exc:
+            issues.append(issue("path_unreadable", "Partition entry could not be inspected", path=partition_label, os_error=str(exc)))
+            continue
+        if is_reparse_metadata(partition_metadata) or not stat.S_ISDIR(partition_metadata.st_mode):
+            issues.append(issue("partition_directory_required", "Bundle root may contain only real partition directories", path=partition_label))
+            continue
+        if partition_entry.name not in partition_tags:
+            issues.append(issue("unregistered_partition", "Partition directory must equal a tag in the configured group", path=partition_label))
+            continue
+        unit_entries = _scan(Path(partition_entry.path), partition_label, issues)
+        if not unit_entries:
+            issues.append(issue("empty_partition", "Partition directories must not be empty", path=partition_label))
+            continue
+        unit_collisions: dict[str, str] = {}
+        for unit_entry in unit_entries:
+            unit_label = f"{partition_label}/{unit_entry.name}"
             try:
-                entry_metadata = entry.stat(follow_symlinks=False)
+                unit_metadata = unit_entry.stat(follow_symlinks=False)
             except OSError as exc:
-                issues.append(issue("path_unreadable", "Record entry could not be inspected", path=label, os_error=str(exc)))
+                issues.append(issue("path_unreadable", "Knowledge-unit entry could not be inspected", path=unit_label, os_error=str(exc)))
                 continue
-            if is_reparse_metadata(entry_metadata) or not stat.S_ISDIR(entry_metadata.st_mode):
-                issues.append(issue("flat_record_directory_required", "Records root may contain only real record directories", path=label))
+            if is_reparse_metadata(unit_metadata) or not stat.S_ISDIR(unit_metadata.st_mode):
+                issues.append(issue("unit_directory_required", "Partitions may contain only real knowledge-unit directories", path=unit_label))
                 continue
             count += 1
-            key = entry.name.casefold()
-            previous = collisions.get(key)
-            if previous is not None and previous != entry.name:
-                issues.append(issue("record_casefold_collision", "Record folders collide under case folding", path=records_root_name, names=[previous, entry.name]))
-            collisions[key] = entry.name
+            key = unit_entry.name.casefold()
+            previous = unit_collisions.get(key)
+            if previous is not None and previous != unit_entry.name:
+                issues.append(issue("record_casefold_collision", "Knowledge-unit folders collide under case folding", path=partition_label, names=[previous, unit_entry.name]))
+            unit_collisions[key] = unit_entry.name
             issues.extend(
                 validate_record_directory(
-                    Path(entry.path),
-                    entry.name,
-                    registered=registered,
+                    Path(unit_entry.path),
+                    unit_entry.name,
+                    registered=all_registered,
                     maximum=maximum,
-                    label_root=records_root_name,
+                    label_root=partition_label,
+                    partition_tags=partition_tags,
+                    expected_partition=partition_entry.name,
                 )
             )
     return ValidationReport(issues=issues, count=count, tags=tags_value, layout=layout_value)

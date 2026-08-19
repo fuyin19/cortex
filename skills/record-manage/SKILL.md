@@ -16,12 +16,12 @@ cortex --json --workspace <kb> manage config show --profile layout
 <layout-json> | cortex --json --workspace <kb> manage config set --profile layout --file -
 ```
 
-Tag replacement must retain every tag referenced by existing records. A records-root rename is available only while the current root is exactly empty. Other layout changes affect future additions and must leave all current folder names within the configured byte cap.
+Tag Profile 2 contains nonempty named groups; tags are globally unique. Layout Profile 2 links `partition_by` to one group. Initialization leaves that link null and is nonoperational until tags are configured and the link is set. Every complete profile replacement is cross-validated against the other profile and all existing units.
 
 Edit metadata without moving or recopying a record:
 
 ```text
-<complete-metadata> | cortex --json --workspace <kb> record edit --record <folder> --metadata -
+<complete-metadata> | cortex --json --workspace <kb> record edit --record <partition>/<unit> --metadata -
 ```
 
-Reads do not lock and may observe either side of a concurrent atomic replacement. If a mutation returns `busy`, retry after the other writer finishes. Never create a second lock, hidden state, plans, journals, indexes, or recovery artifacts.
+Title and ordinary-tag edits do not move a unit; a partition-tag change is rejected. Reads do not lock and may observe either side of a concurrent atomic replacement. If a mutation returns `busy`, retry after the other writer finishes. Never create a second lock, hidden state, plans, journals, indexes, or recovery artifacts. `docs/global-knowledge.md` is authoritative for the unit and bundle model.

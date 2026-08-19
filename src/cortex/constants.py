@@ -25,11 +25,12 @@ RECORD_SCHEMA = {
     "required": ["title", "timestamp", "tags"],
 }
 
-DEFAULT_TAGS = {"version": 1, "tags": []}
+DEFAULT_TAGS = {"version": 2, "groups": []}
 DEFAULT_LAYOUT = {
-    "version": 1,
-    "records_root": "records",
-    "folder_name_strategy": "title-slug",
+    "version": 2,
+    "partition_by": None,
+    "partition_name_strategy": "tag",
+    "unit_name_strategy": "title-slug",
     "max_component_length": 96,
     "duplicate_name_strategy": "numeric-suffix",
 }

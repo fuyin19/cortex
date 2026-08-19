@@ -100,7 +100,7 @@ def component_problem(component: str, *, allow_profiles: bool = True) -> tuple[s
     if is_windows_device_name(component):
         return "windows_device_name", "Windows device names are forbidden"
     if not allow_profiles and component.casefold() == "profiles":
-        return "reserved_records_root", "records_root must not be profiles"
+        return "reserved_partition_name", "Partition tags must not use the reserved profiles name"
     try:
         component.encode("utf-8", errors="strict")
     except UnicodeEncodeError:

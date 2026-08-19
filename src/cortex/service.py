@@ -11,7 +11,7 @@ from typing import Any
 
 from .constants import DEFAULT_LAYOUT, DEFAULT_TAGS, RECORD_FIELDS, RECORD_SCHEMA, VERSION
 from .errors import CortexError, Status, io_error, usage_error, validation_error
-from .jsonio import json_bytes, loads_object, read_json_operand
+from .jsonio import json_bytes, read_json_operand
 from .locking import workspace_lock
 from .naming import suffixed_name, title_slug
 from .native import (
@@ -22,13 +22,12 @@ from .native import (
     inspect_conversion,
     native_path,
     reject_reparse_ancestry,
-    remove_tree_best_effort,
     rename_no_replace,
     require_real_directory,
     require_regular_file,
     require_safe_component,
 )
-from .profiles import require_valid_profile, validate_record
+from .profiles import registered_tags, require_valid_profile, tag_groups, validate_record
 from .validation import ValidationReport, validate_record_directory, validate_workspace
 
 
@@ -54,21 +53,41 @@ def _now() -> str:
 
 
 def _atomic_replace_json(path: Path, value: dict[str, Any], purpose: str) -> None:
+    try:
+        payload = json_bytes(value)
+    except UnicodeEncodeError as exc:
+        raise validation_error("Owned JSON contains text that is not valid UTF-8", "invalid_utf8_text", path=str(path)) from exc
     temporary = path.parent / f".cortex-{purpose}-{uuid.uuid4().hex}.tmp"
     temporary_created = False
     try:
         with temporary.open("xb") as stream:
             temporary_created = True
-            stream.write(json_bytes(value))
+            stream.write(payload)
             stream.flush()
         os.replace(native_path(temporary), native_path(path))
     except OSError as exc:
         if temporary_created:
             try:
                 temporary.unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as cleanup_exc:
+                raise io_error(
+                    "Owned temporary file could not be cleaned",
+                    "cleanup_failed",
+                    path=str(temporary),
+                    os_error=str(cleanup_exc),
+                ) from cleanup_exc
         raise io_error("Owned JSON file could not be replaced", "replace_failed", path=str(path), os_error=str(exc)) from exc
+
+
+def _cleanup_staged_directory(path: Path) -> None:
+    if not exists(path):
+        return
+    import shutil
+
+    try:
+        shutil.rmtree(native_path(path))
+    except OSError as exc:
+        raise io_error("Owned staged directory could not be cleaned", "cleanup_failed", path=str(path), os_error=str(exc)) from exc
 
 
 def _read_operand_again(operand: str, cached: dict[str, Any]) -> dict[str, Any]:
@@ -102,6 +121,35 @@ def _complete_metadata(
         first = problems[0]
         raise validation_error(first["message"], first["code"], path=first.get("path"), issues=problems)
     return candidate
+
+
+def _partition_for_record(record: dict[str, Any], tags: dict[str, Any], layout: dict[str, Any]) -> tuple[str, set[str]]:
+    partition_by = layout["partition_by"]
+    if partition_by is None:
+        raise validation_error("Bundle must be configured before records can be added", "bundle_not_operational")
+    groups = tag_groups(tags)
+    if partition_by not in groups:
+        raise validation_error("partition_by does not name an existing tag group", "unknown_partition_group", group=partition_by)
+    partition_tags = {item["tag"] for item in groups[partition_by]}
+    selected = [tag for tag in record["tags"] if tag in partition_tags]
+    if len(selected) != 1:
+        raise validation_error(
+            "Record must contain exactly one tag from the configured partition group",
+            "partition_tag_count",
+            tags=selected,
+        )
+    return selected[0], partition_tags
+
+
+def _record_operand(value: str) -> tuple[str, str]:
+    if "\\" in value or value.startswith("/"):
+        raise validation_error("Record operand must be a relative two-component POSIX path", "invalid_record_operand", path=value)
+    parts = value.split("/")
+    if len(parts) != 2 or any(part in {"", ".", ".."} for part in parts):
+        raise validation_error("Record operand must be a relative two-component POSIX path", "invalid_record_operand", path=value)
+    for part in parts:
+        require_safe_component(part, label=value)
+    return parts[0], parts[1]
 
 
 def _safe_source(source_text: str) -> Path:
@@ -150,9 +198,7 @@ class CortexService:
                 raise io_error("Workspace directory could not be created", "init_failed", path=str(root), os_error=str(exc)) from exc
         try:
             profiles = root / "profiles"
-            records = root / DEFAULT_LAYOUT["records_root"]
             profiles.mkdir(exist_ok=False)
-            records.mkdir(exist_ok=False)
             for name, value in (
                 ("record-schema.json", RECORD_SCHEMA),
                 ("tags.json", DEFAULT_TAGS),
@@ -163,7 +209,7 @@ class CortexService:
                     stream.flush()
         except OSError as exc:
             raise io_error("Workspace profiles could not be initialized", "init_failed", path=str(root), os_error=str(exc)) from exc
-        return Outcome(data={"version": VERSION, "records_root": DEFAULT_LAYOUT["records_root"]})
+        return Outcome(data={"version": VERSION, "partition_by": None})
 
     def status(self) -> Outcome:
         report = validate_workspace(self.workspace)
@@ -189,60 +235,23 @@ class CortexService:
         _require_initialized_lock_target(self.workspace)
         with workspace_lock(self.workspace) as lock_stream:
             lock_stream.seek(0)
-            report = validate_workspace(self.workspace, locked_record_schema=lock_stream.read())
+            locked_schema = lock_stream.read()
+            report = validate_workspace(self.workspace, locked_record_schema=locked_schema)
             _raise_invalid_report(report)
             value = _read_operand_again(operand, value)
             require_valid_profile(profile, value)
-            if profile == "tags":
-                return self._set_tags(value, report)
-            return self._set_layout(value, report)
+            candidate_report = validate_workspace(
+                self.workspace,
+                locked_record_schema=locked_schema,
+                tags_override=value if profile == "tags" else None,
+                layout_override=value if profile == "layout" else None,
+            )
+            _raise_invalid_report(candidate_report)
+            return self._set_profile(profile, value)
 
-    def _set_tags(self, value: dict[str, Any], report: ValidationReport) -> Outcome:
-        assert report.layout is not None
-        registered = {item["tag"] for item in value["tags"]}
-        orphaned: list[dict[str, Any]] = []
-        records_root = self.workspace / report.layout["records_root"]
-        for entry in checked_scandir(records_root):
-            record = loads_object((Path(entry.path) / "record.json").read_bytes(), label=f"{report.layout['records_root']}/{entry.name}/record.json")
-            missing = [tag for tag in record["tags"] if tag not in registered]
-            if missing:
-                orphaned.append({"record": entry.name, "tags": missing})
-        if orphaned:
-            raise validation_error("Tag replacement would orphan existing record references", "orphaned_tag_reference", records=orphaned)
-        _atomic_replace_json(self.workspace / "profiles" / "tags.json", value, "tags")
-        return Outcome(data={"profile": "tags", "value": value})
-
-    def _set_layout(self, value: dict[str, Any], report: ValidationReport) -> Outcome:
-        assert report.layout is not None
-        old = report.layout
-        old_name = old["records_root"]
-        new_name = value["records_root"]
-        old_root = self.workspace / old_name
-        maximum = value["max_component_length"]
-        folders = [entry.name for entry in checked_scandir(old_root)]
-        too_long = [name for name in folders if len(name.encode("utf-8")) > maximum]
-        if too_long:
-            raise validation_error("Existing record folders exceed the new component limit", "existing_record_folder_too_long", folders=too_long)
-        profile_path = self.workspace / "profiles" / "layout.json"
-        if new_name == old_name:
-            _atomic_replace_json(profile_path, value, "layout")
-            return Outcome(data={"profile": "layout", "value": value})
-        if folders:
-            raise validation_error("records_root can change only while the current root is exactly empty", "records_root_not_empty", path=old_name)
-        new_root = self.workspace / new_name
-        if exists(new_root):
-            raise validation_error("New records_root already exists", "records_root_exists", path=new_name)
-        rename_no_replace(old_root, new_root)
-        try:
-            _atomic_replace_json(profile_path, value, "layout")
-        except CortexError:
-            try:
-                if not exists(old_root):
-                    os.rename(native_path(new_root), native_path(old_root))
-            except OSError:
-                pass
-            raise
-        return Outcome(data={"profile": "layout", "value": value})
+    def _set_profile(self, profile: str, value: dict[str, Any]) -> Outcome:
+        _atomic_replace_json(self.workspace / "profiles" / f"{profile}.json", value, profile)
+        return Outcome(data={"profile": profile, "value": value})
 
     def record_add(self, source_operand: str, conversion_operand: str | None, metadata_operand: str) -> Outcome:
         metadata, _ = read_json_operand(metadata_operand)
@@ -256,15 +265,17 @@ class CortexService:
             _raise_invalid_report(report)
             assert report.tags is not None and report.layout is not None
             metadata = _read_operand_again(metadata_operand, metadata)
-            registered = {item["tag"] for item in report.tags["tags"]}
+            registered = registered_tags(report.tags)
             record = _complete_metadata(metadata, registered)
+            partition, partition_tags = _partition_for_record(record, report.tags, report.layout)
             source = _safe_source(source_operand)
             _, conversion_entries = _safe_conversion(conversion_operand)
 
             layout = report.layout
-            records_root = self.workspace / layout["records_root"]
             base = title_slug(record["title"], layout["max_component_length"])
-            existing = {entry.name.casefold() for entry in checked_scandir(records_root)}
+            partition_root = self.workspace / partition
+            partition_exists = exists(partition_root)
+            existing = {entry.name.casefold() for entry in checked_scandir(partition_root)} if partition_exists else set()
             folder = base
             if folder.casefold() in existing:
                 if layout["duplicate_name_strategy"] == "reject":
@@ -277,28 +288,38 @@ class CortexService:
                         break
                     number += 1
 
-            temporary = records_root / f".cortex-add-{uuid.uuid4().hex}"
-            destination = records_root / folder
+            if partition_exists:
+                temporary = partition_root / f".cortex-add-{uuid.uuid4().hex}"
+                destination = partition_root / folder
+                staged_unit = temporary
+            else:
+                temporary = self.workspace / f".cortex-add-{uuid.uuid4().hex}"
+                destination = partition_root
+                staged_unit = temporary / folder
             temporary_created = False
             try:
                 temporary.mkdir(exist_ok=False)
                 temporary_created = True
-                with (temporary / "record.json").open("xb") as stream:
+                if not partition_exists:
+                    staged_unit.mkdir(exist_ok=False)
+                with (staged_unit / "record.json").open("xb") as stream:
                     stream.write(json_bytes(record))
                     stream.flush()
-                original = temporary / "original"
+                original = staged_unit / "original"
                 original.mkdir(exist_ok=False)
                 copy_regular(source, original / source.name)
                 if conversion_entries is not None:
-                    representations = temporary / "representations"
+                    representations = staged_unit / "representations"
                     representations.mkdir(exist_ok=False)
                     copy_conversion(conversion_entries, representations / "markdown-conversion")
                 problems = validate_record_directory(
-                    temporary,
+                    staged_unit,
                     folder,
                     registered=registered,
                     maximum=layout["max_component_length"],
-                    label_root=layout["records_root"],
+                    label_root=partition,
+                    partition_tags=partition_tags,
+                    expected_partition=partition,
                     check_folder=False,
                 )
                 if problems:
@@ -307,16 +328,17 @@ class CortexService:
                 rename_no_replace(temporary, destination)
             except CortexError:
                 if temporary_created:
-                    remove_tree_best_effort(temporary)
+                    _cleanup_staged_directory(temporary)
                 raise
             except OSError as exc:
                 if temporary_created:
-                    remove_tree_best_effort(temporary)
+                    _cleanup_staged_directory(temporary)
                 raise io_error("Record could not be staged", "record_stage_failed", path=str(destination), os_error=str(exc)) from exc
-            return Outcome(data={"record": folder, "path": f"{layout['records_root']}/{folder}"})
+            operand = f"{partition}/{folder}"
+            return Outcome(data={"record": operand, "path": operand})
 
     def record_edit(self, folder: str, metadata_operand: str) -> Outcome:
-        require_safe_component(folder, label=folder)
+        partition, unit = _record_operand(folder)
         metadata, _ = read_json_operand(metadata_operand)
         _precheck_metadata_shape(metadata)
         _require_initialized_lock_target(self.workspace)
@@ -327,15 +349,17 @@ class CortexService:
             assert report.tags is not None and report.layout is not None
             metadata = _read_operand_again(metadata_operand, metadata)
             _precheck_metadata_shape(metadata)
-            records_root = self.workspace / report.layout["records_root"]
-            matches = [entry for entry in checked_scandir(records_root) if entry.name == folder]
-            if not matches:
+            unit_path = self.workspace / partition / unit
+            if not exists(unit_path):
                 raise validation_error("Record folder does not exist", "record_not_found", path=folder)
-            record_path = Path(matches[0].path) / "record.json"
-            registered = {item["tag"] for item in report.tags["tags"]}
+            record_path = unit_path / "record.json"
+            registered = registered_tags(report.tags)
             record = _complete_metadata(metadata, registered)
+            selected_partition, _ = _partition_for_record(record, report.tags, report.layout)
+            if selected_partition != partition:
+                raise validation_error("Record edits cannot change the partition tag", "partition_change_forbidden", path=folder)
             _atomic_replace_json(record_path, record, "edit")
-            return Outcome(data={"record": folder, "path": f"{report.layout['records_root']}/{folder}"})
+            return Outcome(data={"record": folder, "path": folder})
 
 
 __all__ = ["CortexService", "Outcome"]

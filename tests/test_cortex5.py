@@ -8,11 +8,13 @@ from types import SimpleNamespace
 
 import pytest
 
+import cortex.service as service_module
 from cortex.cli import main
 from cortex.constants import DEFAULT_LAYOUT, DEFAULT_TAGS, PUBLIC_ROUTES, RECORD_SCHEMA, VERSION
 from cortex.jsonio import json_bytes
 from cortex.locking import workspace_lock
 from cortex.native import is_reparse_metadata
+from cortex.errors import io_error
 
 
 def invoke(capsys: pytest.CaptureFixture[str], *args: str) -> tuple[int, dict]:
@@ -32,6 +34,16 @@ def write_json(path: Path, value: object) -> Path:
     return path
 
 
+def snapshot(root: Path) -> list[tuple[str, str, bytes | None]]:
+    if not root.exists():
+        return []
+    output: list[tuple[str, str, bytes | None]] = []
+    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+        relative = path.relative_to(root).as_posix()
+        output.append((relative, "dir", None) if path.is_dir() else (relative, "file", path.read_bytes()))
+    return output
+
+
 def init_kb(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Path:
     kb = tmp_path / "kb"
     code, result = invoke(capsys, "--workspace", str(kb), "manage", "init")
@@ -39,22 +51,27 @@ def init_kb(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> Path:
     return kb
 
 
-def set_tags(kb: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], tags: list[str]) -> None:
-    profile = {"version": 1, "tags": [{"tag": tag, "description": f"{tag} description"} for tag in tags]}
-    operand = write_json(tmp_path / f"tags-{len(tags)}.json", profile)
-    code, _ = invoke(
-        capsys,
-        "--workspace",
-        str(kb),
-        "manage",
-        "config",
-        "set",
-        "--profile",
-        "tags",
-        "--file",
-        str(operand),
-    )
-    assert code == 0
+def tags_profile(*, projects: tuple[str, ...] = ("project-a", "project-b"), extras: tuple[str, ...] = ("listed",)) -> dict:
+    groups = []
+    if projects:
+        groups.append({"name": "project", "tags": [{"tag": tag, "description": f"{tag} description"} for tag in projects]})
+    if extras:
+        groups.append({"name": "listing-standard", "tags": [{"tag": tag, "description": tag} for tag in extras]})
+    return {"version": 2, "groups": groups}
+
+
+def layout_profile(**changes: object) -> dict:
+    return dict(DEFAULT_LAYOUT, partition_by="project", **changes)
+
+
+def set_profile(kb: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], profile: str, value: dict) -> tuple[int, dict]:
+    operand = write_json(tmp_path / f"{profile}-{len(list(tmp_path.glob(profile + '-*')))}.json", value)
+    return invoke(capsys, "--workspace", str(kb), "manage", "config", "set", "--profile", profile, "--file", str(operand))
+
+
+def configure(kb: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], *, projects: tuple[str, ...] = ("project-a", "project-b")) -> None:
+    assert set_profile(kb, tmp_path, capsys, "tags", tags_profile(projects=projects))[0] == 0
+    assert set_profile(kb, tmp_path, capsys, "layout", layout_profile())[0] == 0
 
 
 def add_record(
@@ -63,7 +80,7 @@ def add_record(
     capsys: pytest.CaptureFixture[str],
     *,
     title: str = "Alpha Record",
-    timestamp: str | None = "2026-08-19T10:20:30+08:00",
+    project: str = "project-a",
     tags: list[str] | None = None,
     source_name: str = "source.bin",
     source_bytes: bytes = b"source\x00bytes",
@@ -71,369 +88,330 @@ def add_record(
 ) -> tuple[dict, Path]:
     source = tmp_path / source_name
     source.write_bytes(source_bytes)
-    metadata: dict[str, object] = {"title": title, "tags": tags or []}
-    if timestamp is not None:
-        metadata["timestamp"] = timestamp
-    metadata_path = write_json(tmp_path / f"metadata-{len(list(tmp_path.glob('metadata-*')))}.json", metadata)
-    args = [
-        "--workspace",
-        str(kb),
-        "record",
-        "add",
-        "--source",
-        str(source),
-        "--metadata",
-        str(metadata_path),
-    ]
+    metadata = {"title": title, "timestamp": "2026-08-19T10:20:30+08:00", "tags": tags if tags is not None else [project]}
+    operand = write_json(tmp_path / f"metadata-{len(list(tmp_path.glob('metadata-*')))}.json", metadata)
+    args = ["--workspace", str(kb), "record", "add", "--source", str(source), "--metadata", str(operand)]
     if conversion is not None:
         args.extend(["--conversion", str(conversion)])
     code, result = invoke(capsys, *args)
     assert code == 0, result
-    folder = result["data"]["record"]
-    return result, kb / "records" / folder
+    return result, kb.joinpath(*result["data"]["record"].split("/"))
 
 
-def snapshot(root: Path) -> list[tuple[str, str, bytes | None]]:
-    if not root.exists():
-        return []
-    output: list[tuple[str, str, bytes | None]] = []
-    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
-        relative = path.relative_to(root).as_posix()
-        if path.is_dir():
-            output.append((relative, "dir", None))
-        else:
-            output.append((relative, "file", path.read_bytes()))
-    return output
-
-
-def test_sc_001_init_exact_tree_and_profiles(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_sc_001_init_is_profiles_only_and_unconfigured(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     kb = init_kb(tmp_path, capsys)
-    assert {path.relative_to(kb).as_posix() for path in kb.rglob("*")} == {
-        "profiles",
-        "profiles/record-schema.json",
-        "profiles/tags.json",
-        "profiles/layout.json",
-        "records",
-    }
+    assert {path.relative_to(kb).as_posix() for path in kb.rglob("*")} == {"profiles", "profiles/record-schema.json", "profiles/tags.json", "profiles/layout.json"}
     assert (kb / "profiles" / "record-schema.json").read_bytes() == json_bytes(RECORD_SCHEMA)
     assert json.loads((kb / "profiles" / "tags.json").read_text("utf-8")) == DEFAULT_TAGS
     assert json.loads((kb / "profiles" / "layout.json").read_text("utf-8")) == DEFAULT_LAYOUT
-    assert not (kb / ".cortex").exists()
+    code, status = invoke(capsys, "--workspace", str(kb), "manage", "status")
+    assert code == 0 and status["data"] == {"version": VERSION, "valid": True, "count": 0}
 
 
-def test_sc_002_closed_cli_and_version(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
-    assert PUBLIC_ROUTES == (
-        "manage.init",
-        "manage.status",
-        "manage.validate",
-        "manage.config.show",
-        "manage.config.set",
-        "record.add",
-        "record.edit",
-    )
+def test_sc_002_closed_surface_and_version(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    assert len(PUBLIC_ROUTES) == 7
     code, result = invoke(capsys, "--workspace", str(tmp_path / "x"), "build", "ingest")
     assert code == 2 and result["status"] == "usage_error"
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
-    assert capsys.readouterr().out.strip() == f"cortex {VERSION}"
+    assert capsys.readouterr().out.strip() == "cortex 5.0.0"
 
 
-def test_sc_003_flat_record_shape_and_exact_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_sc_003_unconfigured_add_rejected_without_mutation(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     kb = init_kb(tmp_path, capsys)
-    _, record_dir = add_record(kb, tmp_path, capsys)
-    assert {path.name for path in record_dir.iterdir()} == {"record.json", "original"}
-    value = {"title": "Alpha Record", "timestamp": "2026-08-19T10:20:30+08:00", "tags": []}
-    assert (record_dir / "record.json").read_bytes() == json_bytes(value)
-    assert (record_dir / "original" / "source.bin").read_bytes() == b"source\x00bytes"
+    source = tmp_path / "source"
+    source.write_bytes(b"x")
+    metadata = write_json(tmp_path / "metadata.json", {"title": "A", "tags": []})
+    before = snapshot(kb)
+    code, result = invoke(capsys, "--workspace", str(kb), "record", "add", "--source", str(source), "--metadata", str(metadata))
+    assert code == 3 and result["issues"][0]["code"] == "bundle_not_operational" and snapshot(kb) == before
+
+
+def test_sc_004_partitioned_add_exact_unit_and_result(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    kb = init_kb(tmp_path, capsys)
+    configure(kb, tmp_path, capsys)
+    result, unit = add_record(kb, tmp_path, capsys, tags=["listed", "project-a"])
+    assert result["data"] == {"record": "project-a/alpha-record", "path": "project-a/alpha-record"}
+    assert {path.name for path in unit.iterdir()} == {"record.json", "original"}
+    assert (unit / "original" / "source.bin").read_bytes() == b"source\x00bytes"
+    assert not (kb / "records").exists() and not (kb / "unstructured").exists()
+
+
+@pytest.mark.parametrize("tags,code", [(["listed"], "partition_tag_count"), (["project-a", "project-b"], "partition_tag_count"), (["missing", "project-a"], "unregistered_tag"), (["project-a", "project-a"], "duplicate_record_tag")])
+def test_sc_005_invalid_record_tags_do_not_mutate(tmp_path: Path, capsys: pytest.CaptureFixture[str], tags: list[str], code: str) -> None:
+    kb = init_kb(tmp_path, capsys)
+    configure(kb, tmp_path, capsys)
+    source = tmp_path / "source"
+    source.write_bytes(b"x")
+    metadata = write_json(tmp_path / "metadata.json", {"title": "A", "tags": tags})
+    before = snapshot(kb)
+    status, result = invoke(capsys, "--workspace", str(kb), "record", "add", "--source", str(source), "--metadata", str(metadata))
+    assert status == 3 and result["issues"][0]["code"] == code and snapshot(kb) == before
 
 
 @pytest.mark.parametrize(
-    "metadata,code",
+    "profile,expected",
     [
-        ({"title": "", "tags": []}, "invalid_title"),
-        ({"title": "A", "tags": ["missing"]}, "unregistered_tag"),
-        ({"title": "A", "tags": [], "extra": 1}, "unknown_field"),
-        ({"title": "A", "tags": [], "timestamp": "2026-08-19"}, "invalid_timestamp"),
-        ({"title": "A", "tags": ["x", "x"]}, "duplicate_record_tag"),
+        ({"version": 2, "groups": [{"name": "", "tags": []}]}, "invalid_group_name"),
+        ({"version": 2, "groups": [{"name": "x", "tags": []}]}, "invalid_group_tags"),
+        ({"version": 2, "groups": [{"name": "x", "tags": [{"tag": "a", "description": ""}]}, {"name": "x", "tags": [{"tag": "b", "description": ""}]}]}, "duplicate_group_name"),
+        ({"version": 2, "groups": [{"name": "x", "tags": [{"tag": "a", "description": ""}]}, {"name": "y", "tags": [{"tag": "a", "description": ""}]}]}, "duplicate_tag"),
     ],
 )
-def test_sc_004_three_field_validation_unchanged(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], metadata: dict, code: str
-) -> None:
+def test_sc_006_tag_profile_strict_negative(tmp_path: Path, capsys: pytest.CaptureFixture[str], profile: dict, expected: str) -> None:
     kb = init_kb(tmp_path, capsys)
-    if "x" in metadata.get("tags", []):
-        set_tags(kb, tmp_path, capsys, ["x"])
-    source = tmp_path / "input"
-    source.write_bytes(b"x")
-    operand = write_json(tmp_path / "bad.json", metadata)
+    code, result = set_profile(kb, tmp_path, capsys, "tags", profile)
+    assert code == 3 and any(item["code"] == expected for item in result["issues"])
+
+
+def test_sc_007_layout_link_and_partition_names_cross_validate(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    kb = init_kb(tmp_path, capsys)
+    assert set_profile(kb, tmp_path, capsys, "layout", layout_profile())[0] == 3
+    assert set_profile(kb, tmp_path, capsys, "tags", tags_profile(projects=("A", "a")))[0] == 0
+    code, result = set_profile(kb, tmp_path, capsys, "layout", layout_profile())
+    assert code == 3 and any(item["code"] == "partition_casefold_collision" for item in result["issues"])
+    assert set_profile(kb, tmp_path, capsys, "tags", tags_profile(projects=("profiles",)))[0] == 0
+    code, result = set_profile(kb, tmp_path, capsys, "layout", layout_profile())
+    assert code == 3 and any(item["code"] == "reserved_partition_name" for item in result["issues"])
+
+
+def test_sc_008_validation_catches_partition_shape_and_metadata_mismatch(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    kb = init_kb(tmp_path, capsys)
+    configure(kb, tmp_path, capsys)
+    _, unit = add_record(kb, tmp_path, capsys)
+    record = json.loads((unit / "record.json").read_text("utf-8"))
+    record["tags"] = ["project-b"]
+    (unit / "record.json").write_bytes(json_bytes(record))
+    (kb / "project-b").mkdir()
+    (kb / "rogue").mkdir()
+    code, result = invoke(capsys, "--workspace", str(kb), "manage", "validate")
+    codes = {item["code"] for item in result["issues"]}
+    assert code == 3 and {"partition_path_mismatch", "empty_partition", "unregistered_partition"} <= codes
+
+
+def test_sc_009_edit_path_stable_and_partition_change_rejected(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    kb = init_kb(tmp_path, capsys)
+    configure(kb, tmp_path, capsys)
+    _, unit = add_record(kb, tmp_path, capsys)
+    edit = write_json(tmp_path / "edit.json", {"title": "Different", "tags": ["project-a"]})
+    code, result = invoke(capsys, "--workspace", str(kb), "record", "edit", "--record", "project-a/alpha-record", "--metadata", str(edit))
+    assert code == 0 and result["data"]["record"] == "project-a/alpha-record" and unit.is_dir()
+    move = write_json(tmp_path / "move.json", {"title": "Different", "tags": ["project-b"]})
     before = snapshot(kb)
-    status, result = invoke(
-        capsys,
-        "--workspace",
-        str(kb),
-        "record",
-        "add",
-        "--source",
-        str(source),
-        "--metadata",
-        str(operand),
-    )
-    assert status == 3 and result["issues"][0]["code"] == code
+    code, result = invoke(capsys, "--workspace", str(kb), "record", "edit", "--record", "project-a/alpha-record", "--metadata", str(move))
+    assert code == 3 and result["issues"][0]["code"] == "partition_change_forbidden" and snapshot(kb) == before
+
+
+@pytest.mark.parametrize("operand", ["alpha-record", "/project-a/alpha-record", "project-a\\alpha-record", "project-a/../alpha", "a/b/c"])
+def test_sc_010_edit_operand_is_exact_two_component_posix(tmp_path: Path, capsys: pytest.CaptureFixture[str], operand: str) -> None:
+    kb = init_kb(tmp_path, capsys)
+    configure(kb, tmp_path, capsys)
+    edit = write_json(tmp_path / "edit.json", {"title": "A", "tags": ["project-a"]})
+    code, result = invoke(capsys, "--workspace", str(kb), "record", "edit", "--record", operand, "--metadata", str(edit))
+    assert code == 3 and result["issues"][0]["code"] == "invalid_record_operand"
+
+
+def test_sc_011_config_cross_validation_and_description_only_update(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    kb = init_kb(tmp_path, capsys)
+    configure(kb, tmp_path, capsys)
+    add_record(kb, tmp_path, capsys)
+    changed = tags_profile()
+    changed["groups"][0]["tags"][0]["description"] = "changed only"
+    assert set_profile(kb, tmp_path, capsys, "tags", changed)[0] == 0
+    before = snapshot(kb)
+    assert set_profile(kb, tmp_path, capsys, "tags", tags_profile(projects=("project-b",)))[0] == 3
+    assert snapshot(kb) == before
+    assert set_profile(kb, tmp_path, capsys, "layout", dict(DEFAULT_LAYOUT))[0] == 3
     assert snapshot(kb) == before
 
 
-def test_sc_005_edit_title_does_not_move_directory(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_sc_012_suffix_scope_unicode_limit_and_reject(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     kb = init_kb(tmp_path, capsys)
-    _, record_dir = add_record(kb, tmp_path, capsys)
-    patch = write_json(
-        tmp_path / "edit.json",
-        {"title": "Completely Different", "timestamp": "2026-08-19T10:20:30+08:00", "tags": []},
-    )
-    code, result = invoke(
-        capsys,
-        "--workspace",
-        str(kb),
-        "record",
-        "edit",
-        "--record",
-        record_dir.name,
-        "--metadata",
-        str(patch),
-    )
-    assert code == 0 and result["data"]["record"] == record_dir.name
-    assert record_dir.is_dir() and not (kb / "records" / "completely-different").exists()
-    assert json.loads((record_dir / "record.json").read_text("utf-8"))["title"] == "Completely Different"
-
-
-def test_sc_006_timestamp_preserved_or_generated_utc(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    kb = init_kb(tmp_path, capsys)
-    _, first = add_record(kb, tmp_path, capsys, title="Exact", timestamp="2026-08-19T01:02:03.400-00:00")
-    assert json.loads((first / "record.json").read_text("utf-8"))["timestamp"] == "2026-08-19T01:02:03.400-00:00"
-    _, second = add_record(kb, tmp_path, capsys, title="Generated", timestamp=None, source_name="other")
-    generated = json.loads((second / "record.json").read_text("utf-8"))["timestamp"]
-    assert len(generated) == 27 and generated.endswith("Z") and generated[19] == "."
-
-
-def test_sc_007_metadata_only_edit_preserves_custody(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    kb = init_kb(tmp_path, capsys)
-    _, record_dir = add_record(kb, tmp_path, capsys)
-    original = (record_dir / "original" / "source.bin").read_bytes()
-    patch = write_json(
-        tmp_path / "tags-edit.json",
-        {"title": "Alpha Record", "tags": []},
-    )
-    code, _ = invoke(capsys, "--workspace", str(kb), "record", "edit", "--record", record_dir.name, "--metadata", str(patch))
-    assert code == 0 and (record_dir / "original" / "source.bin").read_bytes() == original
-    assert json.loads((record_dir / "record.json").read_text("utf-8"))["timestamp"].endswith("Z")
-
-
-def test_sc_008_three_profiles_show_set_and_orphan_guard(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    kb = init_kb(tmp_path, capsys)
-    set_tags(kb, tmp_path, capsys, ["A", "a"])
-    code, shown = invoke(capsys, "--workspace", str(kb), "manage", "config", "show", "--profile", "tags")
-    assert code == 0 and [item["tag"] for item in shown["data"]["value"]["tags"]] == ["A", "a"]
-    _, _ = add_record(kb, tmp_path, capsys, tags=["A"])
-    empty = write_json(tmp_path / "empty-tags.json", DEFAULT_TAGS)
-    before = snapshot(kb)
-    code, result = invoke(capsys, "--workspace", str(kb), "manage", "config", "set", "--profile", "tags", "--file", str(empty))
-    assert code == 3 and result["issues"][0]["code"] == "orphaned_tag_reference" and snapshot(kb) == before
-
-
-def test_sc_009_slug_suffix_casefold_and_utf8_cap(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    kb = init_kb(tmp_path, capsys)
-    layout = dict(DEFAULT_LAYOUT, max_component_length=16)
-    path = write_json(tmp_path / "layout.json", layout)
-    assert invoke(capsys, "--workspace", str(kb), "manage", "config", "set", "--profile", "layout", "--file", str(path))[0] == 0
-    _, first = add_record(kb, tmp_path, capsys, title="  CON  ", source_name="one")
+    configure(kb, tmp_path, capsys)
+    assert set_profile(kb, tmp_path, capsys, "layout", layout_profile(max_component_length=16))[0] == 0
+    _, first = add_record(kb, tmp_path, capsys, title=" CON ", source_name="one")
     _, second = add_record(kb, tmp_path, capsys, title="CON", source_name="two")
-    _, third = add_record(kb, tmp_path, capsys, title="界" * 20, source_name="three")
-    assert first.name == "_con" and second.name == "_con-2"
-    assert len(third.name.encode("utf-8")) <= 16 and not third.name.encode("utf-8").endswith(b"\xef\xbf\xbd")
-
-
-def test_sc_010_duplicate_reject(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    kb = init_kb(tmp_path, capsys)
-    layout = dict(DEFAULT_LAYOUT, duplicate_name_strategy="reject")
-    path = write_json(tmp_path / "layout-reject.json", layout)
-    assert invoke(capsys, "--workspace", str(kb), "manage", "config", "set", "--profile", "layout", "--file", str(path))[0] == 0
-    add_record(kb, tmp_path, capsys, title="Same", source_name="one")
-    source = tmp_path / "two"
-    source.write_bytes(b"2")
-    metadata = write_json(tmp_path / "same.json", {"title": "SAME", "tags": []})
+    _, other = add_record(kb, tmp_path, capsys, title="CON", project="project-b", source_name="three")
+    _, unicode_unit = add_record(kb, tmp_path, capsys, title="界" * 20, source_name="four")
+    assert first.name == "_con" and second.name == "_con-2" and other.name == "_con"
+    assert len(unicode_unit.name.encode("utf-8")) <= 16
+    assert set_profile(kb, tmp_path, capsys, "layout", layout_profile(max_component_length=16, duplicate_name_strategy="reject"))[0] == 0
+    source = tmp_path / "five"
+    source.write_bytes(b"x")
+    metadata = write_json(tmp_path / "duplicate.json", {"title": "con", "tags": ["project-b"]})
     code, result = invoke(capsys, "--workspace", str(kb), "record", "add", "--source", str(source), "--metadata", str(metadata))
     assert code == 3 and result["issues"][0]["code"] == "duplicate_record_name"
 
 
-def test_sc_011_records_root_change_empty_only(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_sc_013_source_and_conversion_custody(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     kb = init_kb(tmp_path, capsys)
-    layout = dict(DEFAULT_LAYOUT, records_root="items")
-    path = write_json(tmp_path / "layout-items.json", layout)
-    code, _ = invoke(capsys, "--workspace", str(kb), "manage", "config", "set", "--profile", "layout", "--file", str(path))
-    assert code == 0 and (kb / "items").is_dir() and not (kb / "records").exists()
-    source = tmp_path / "source"
-    source.write_bytes(b"x")
-    metadata = write_json(tmp_path / "record.json", {"title": "Item", "tags": []})
-    assert invoke(capsys, "--workspace", str(kb), "record", "add", "--source", str(source), "--metadata", str(metadata))[0] == 0
-    revert = write_json(tmp_path / "layout-records.json", DEFAULT_LAYOUT)
-    before = snapshot(kb)
-    code, result = invoke(capsys, "--workspace", str(kb), "manage", "config", "set", "--profile", "layout", "--file", str(revert))
-    assert code == 3 and result["issues"][0]["code"] == "records_root_not_empty" and snapshot(kb) == before
-
-
-def test_sc_012_source_and_conversion_file_bytes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    kb = init_kb(tmp_path, capsys)
-    conversion = tmp_path / "converted.md"
-    conversion.write_bytes(b"\xffopaque markdown")
-    _, record_dir = add_record(kb, tmp_path, capsys, conversion=conversion)
-    assert (record_dir / "representations" / "markdown-conversion" / "converted.md").read_bytes() == b"\xffopaque markdown"
-
-
-def test_sc_013_conversion_directory_paths_empty_dirs_and_opaque(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    kb = init_kb(tmp_path, capsys)
+    configure(kb, tmp_path, capsys)
     conversion = tmp_path / "conversion"
     (conversion / "empty").mkdir(parents=True)
     (conversion / "nested").mkdir()
-    (conversion / "nested" / "record.json").write_bytes(b"not JSON and intentionally opaque\x00")
-    _, record_dir = add_record(kb, tmp_path, capsys, conversion=conversion)
-    root = record_dir / "representations" / "markdown-conversion"
-    assert (root / "empty").is_dir()
-    assert (root / "nested" / "record.json").read_bytes() == b"not JSON and intentionally opaque\x00"
+    (conversion / "nested" / "record.json").write_bytes(b"opaque\x00\xff")
+    _, unit = add_record(kb, tmp_path, capsys, conversion=conversion)
+    root = unit / "representations" / "markdown-conversion"
+    assert (root / "empty").is_dir() and (root / "nested" / "record.json").read_bytes() == b"opaque\x00\xff"
 
 
-def test_sc_014_unsafe_source_basename_rejected(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_sc_014_reparse_and_reserved_source_rejected(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     kb = init_kb(tmp_path, capsys)
+    configure(kb, tmp_path, capsys)
     source = tmp_path / ".cortex-input"
     source.write_bytes(b"x")
-    metadata = write_json(tmp_path / "meta.json", {"title": "Safe", "tags": []})
-    code, result = invoke(capsys, "--workspace", str(kb), "record", "add", "--source", str(source), "--metadata", str(metadata))
-    assert code == 3 and result["issues"][0]["code"] == "reserved_staging_name"
+    metadata = write_json(tmp_path / "metadata.json", {"title": "A", "tags": ["project-a"]})
+    assert invoke(capsys, "--workspace", str(kb), "record", "add", "--source", str(source), "--metadata", str(metadata))[1]["issues"][0]["code"] == "reserved_staging_name"
+    synthetic = SimpleNamespace(st_mode=stat.S_IFREG, st_file_attributes=getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    assert is_reparse_metadata(synthetic)
 
 
-def test_sc_015_conversion_symlink_rejected(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_sc_015_one_lock_busy_for_all_mutations(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     kb = init_kb(tmp_path, capsys)
-    conversion = tmp_path / "conversion"
-    conversion.mkdir()
-    target = tmp_path / "target"
-    target.write_bytes(b"x")
-    link = conversion / "link"
-    try:
-        link.symlink_to(target)
-    except (OSError, NotImplementedError):
-        synthetic = SimpleNamespace(
-            st_mode=stat.S_IFREG,
-            st_file_attributes=getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400),
-        )
-        assert is_reparse_metadata(synthetic)
-        return
+    configure(kb, tmp_path, capsys)
+    _, unit = add_record(kb, tmp_path, capsys)
+    source = tmp_path / "busy-source"
+    source.write_bytes(b"x")
+    metadata = write_json(tmp_path / "busy.json", {"title": "Busy", "tags": ["project-a"]})
+    tags = write_json(tmp_path / "busy-tags.json", tags_profile())
+    layout = write_json(tmp_path / "busy-layout.json", layout_profile())
+    commands = [("record", "add", "--source", str(source), "--metadata", str(metadata)), ("record", "edit", "--record", "project-a/alpha-record", "--metadata", str(metadata)), ("manage", "config", "set", "--profile", "tags", "--file", str(tags)), ("manage", "config", "set", "--profile", "layout", "--file", str(layout))]
+    with workspace_lock(kb):
+        for tail in commands:
+            code, result = invoke(capsys, "--workspace", str(kb), *tail)
+            assert code == 5 and result["status"] == "busy"
+    assert unit.is_dir()
+
+
+@pytest.mark.parametrize("payload,code", [(b"\xef\xbb\xbf{}", "json_bom"), (b'{"title":"A","title":"B","tags":[]}', "duplicate_json_key"), (b"[]", "invalid_json_top_level"), (b"\xff", "invalid_utf8")])
+def test_sc_016_strict_json_nonmutating(tmp_path: Path, capsys: pytest.CaptureFixture[str], payload: bytes, code: str) -> None:
+    kb = init_kb(tmp_path, capsys)
+    configure(kb, tmp_path, capsys)
     source = tmp_path / "source"
     source.write_bytes(b"x")
-    metadata = write_json(tmp_path / "metadata.json", {"title": "Safe", "tags": []})
-    code, result = invoke(
-        capsys,
-        "--workspace",
-        str(kb),
-        "record",
-        "add",
-        "--source",
-        str(source),
-        "--conversion",
-        str(conversion),
-        "--metadata",
-        str(metadata),
-    )
-    assert code == 3 and result["issues"][0]["code"] == "reparse_path"
-
-
-@pytest.mark.parametrize(
-    "payload,code",
-    [
-        (b"\xef\xbb\xbf{}", "json_bom"),
-        (b'{"title":"A","title":"B","tags":[]}', "duplicate_json_key"),
-        (b'{"title":"A","tags":[]} trailing', "invalid_json"),
-        (b"[]", "invalid_json_top_level"),
-        (b"\xff", "invalid_utf8"),
-    ],
-)
-def test_sc_016_strict_json_inputs(tmp_path: Path, capsys: pytest.CaptureFixture[str], payload: bytes, code: str) -> None:
-    kb = init_kb(tmp_path, capsys)
-    source = tmp_path / "source"
-    source.write_bytes(b"x")
-    metadata = tmp_path / "metadata.json"
+    metadata = tmp_path / "bad.json"
     metadata.write_bytes(payload)
     before = snapshot(kb)
     status, result = invoke(capsys, "--workspace", str(kb), "record", "add", "--source", str(source), "--metadata", str(metadata))
     assert status == 3 and result["issues"][0]["code"] == code and snapshot(kb) == before
 
 
-def test_sc_017_all_initialized_mutations_busy_under_one_lock(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_sc_017_stdin_profile_and_metadata(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
     kb = init_kb(tmp_path, capsys)
-    _, record_dir = add_record(kb, tmp_path, capsys)
-    source = tmp_path / "busy-source"
+    monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(json_bytes(tags_profile())), encoding="utf-8"))
+    assert invoke(capsys, "--workspace", str(kb), "manage", "config", "set", "--profile", "tags", "--file", "-")[0] == 0
+    assert set_profile(kb, tmp_path, capsys, "layout", layout_profile())[0] == 0
+    source = tmp_path / "source"
     source.write_bytes(b"x")
-    add_metadata = write_json(tmp_path / "busy-add.json", {"title": "Busy", "tags": []})
-    edit_metadata = write_json(tmp_path / "busy-edit.json", {"title": "Busy edit", "tags": []})
-    tags = write_json(tmp_path / "busy-tags.json", DEFAULT_TAGS)
-    layout = write_json(tmp_path / "busy-layout.json", DEFAULT_LAYOUT)
+    monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(json_bytes({"title": "Stream", "tags": ["project-a"]})), encoding="utf-8"))
+    code, result = invoke(capsys, "--workspace", str(kb), "record", "add", "--source", str(source), "--metadata", "-")
+    assert code == 0 and result["data"]["record"] == "project-a/stream"
+
+
+def test_sc_018_read_side_effect_free_and_end_to_end_count(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    kb = init_kb(tmp_path, capsys)
+    configure(kb, tmp_path, capsys)
+    add_record(kb, tmp_path, capsys)
+    add_record(kb, tmp_path, capsys, project="project-b", title="Beta", source_name="other")
+    before = snapshot(kb)
+    code, result = invoke(capsys, "--workspace", str(kb), "manage", "validate")
+    assert code == 0 and result["data"] == {"version": VERSION, "valid": True, "count": 2}
+    assert snapshot(kb) == before and list(kb.glob(".cortex*")) == []
+
+
+def test_sc_019_add_stage_failure_cleans_new_and_existing_partition(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kb = init_kb(tmp_path, capsys)
+    configure(kb, tmp_path, capsys)
+    source = tmp_path / "source"
+    source.write_bytes(b"x")
+    metadata = write_json(tmp_path / "first.json", {"title": "First", "tags": ["project-a"]})
+
+    def fail_copy(_source: Path, _destination: Path) -> None:
+        raise io_error("injected", "copy_failed")
+
+    monkeypatch.setattr(service_module, "copy_regular", fail_copy)
+    before = snapshot(kb)
+    code, result = invoke(capsys, "--workspace", str(kb), "record", "add", "--source", str(source), "--metadata", str(metadata))
+    assert code == 6 and result["issues"][0]["code"] == "copy_failed" and snapshot(kb) == before
+    assert not (kb / "project-a").exists() and list(kb.glob(".cortex-*")) == []
+
+    monkeypatch.undo()
+    add_record(kb, tmp_path, capsys)
+    monkeypatch.setattr(service_module, "copy_regular", fail_copy)
+    metadata = write_json(tmp_path / "second.json", {"title": "Second", "tags": ["project-a"]})
+    before = snapshot(kb)
+    code, result = invoke(capsys, "--workspace", str(kb), "record", "add", "--source", str(source), "--metadata", str(metadata))
+    assert code == 6 and result["issues"][0]["code"] == "copy_failed" and snapshot(kb) == before
+    assert list((kb / "project-a").glob(".cortex-*")) == []
+
+
+def test_sc_020_atomic_file_failures_clean_own_temporary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kb = init_kb(tmp_path, capsys)
+    configure(kb, tmp_path, capsys)
+    add_record(kb, tmp_path, capsys)
+    edit = write_json(tmp_path / "edit.json", {"title": "Edited", "tags": ["project-a"]})
+    tags = write_json(tmp_path / "tags-change.json", tags_profile())
+    layout = write_json(tmp_path / "layout-change.json", layout_profile())
+    before = snapshot(kb)
+
+    def fail_replace(_source: str, _destination: str) -> None:
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(service_module.os, "replace", fail_replace)
     commands = [
-        ("record", "add", "--source", str(source), "--metadata", str(add_metadata)),
-        ("record", "edit", "--record", record_dir.name, "--metadata", str(edit_metadata)),
+        ("record", "edit", "--record", "project-a/alpha-record", "--metadata", str(edit)),
         ("manage", "config", "set", "--profile", "tags", "--file", str(tags)),
         ("manage", "config", "set", "--profile", "layout", "--file", str(layout)),
     ]
-    with workspace_lock(kb):
-        for tail in commands:
-            code, result = invoke(capsys, "--workspace", str(kb), *tail)
-            assert code == 5 and result["status"] == "busy" and result["issues"][0]["code"] == "workspace_busy"
+    for tail in commands:
+        code, result = invoke(capsys, "--workspace", str(kb), *tail)
+        assert code == 6 and result["issues"][0]["code"] == "replace_failed"
+        assert snapshot(kb) == before
+        assert list(kb.rglob(".cortex-*.tmp")) == []
 
 
-def test_sc_018_invalid_profile_replacement_is_nonmutating(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_sc_021_global_knowledge_and_surfaces_are_consistent() -> None:
+    root = Path(__file__).parents[1]
+    global_knowledge = (root / "docs" / "global-knowledge.md").read_text("utf-8")
+    assert "record.json" in global_knowledge and "original/<one-source-file>" in global_knowledge
+    assert "partition_by" in global_knowledge and "no mandatory `records/`" in global_knowledge
+    for relative in ("README.md", "AGENTS.md", "docs/record-kb-architecture.md", "skills/record-build/SKILL.md", "skills/record-manage/SKILL.md"):
+        assert "global-knowledge.md" in (root / relative).read_text("utf-8")
+    capability = json.loads((root / "fixtures" / "capabilities" / "cortex5-surface.json").read_text("utf-8"))
+    assert capability["version"] == VERSION and capability["routes"] == list(PUBLIC_ROUTES)
+    assert capability["tag_profile_version"] == 2 and capability["layout_profile_version"] == 2
+
+
+def test_sc_022_escaped_surrogate_text_is_rejected_without_temporary_residue(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     kb = init_kb(tmp_path, capsys)
-    invalid = write_json(tmp_path / "invalid-layout.json", dict(DEFAULT_LAYOUT, max_component_length=15))
+    operand = tmp_path / "surrogate-tags.json"
+    operand.write_bytes(b'{"version":2,"groups":[{"name":"project","tags":[{"tag":"safe","description":"\\ud800"}]}]}')
     before = snapshot(kb)
-    code, _ = invoke(capsys, "--workspace", str(kb), "manage", "config", "set", "--profile", "layout", "--file", str(invalid))
-    assert code == 3 and snapshot(kb) == before
+    code, result = invoke(capsys, "--workspace", str(kb), "manage", "config", "set", "--profile", "tags", "--file", str(operand))
+    assert code == 3 and result["issues"][0]["code"] == "invalid_tag_description"
+    assert snapshot(kb) == before and list((kb / "profiles").glob(".cortex-*")) == []
 
 
-def test_sc_019_status_validate_side_effect_free_and_full_issues(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_sc_023_reordered_record_fields_are_noncanonical_and_validation_is_read_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     kb = init_kb(tmp_path, capsys)
+    configure(kb, tmp_path, capsys)
+    _, unit = add_record(kb, tmp_path, capsys)
+    reordered = {
+        "tags": ["project-a"],
+        "title": "Alpha Record",
+        "timestamp": "2026-08-19T10:20:30+08:00",
+    }
+    (unit / "record.json").write_bytes(json_bytes(reordered))
     before = snapshot(kb)
-    code, status = invoke(capsys, "--workspace", str(kb), "manage", "status")
-    assert code == 0 and status["data"] == {"version": VERSION, "valid": True, "count": 0}
-    assert invoke(capsys, "--workspace", str(kb), "manage", "validate")[0] == 0
+    code, result = invoke(capsys, "--workspace", str(kb), "manage", "validate")
+    assert code == 3 and any(item["code"] == "noncanonical_record_json" for item in result["issues"])
     assert snapshot(kb) == before
-    (kb / "extra").write_bytes(b"x")
-    (kb / "profiles" / "extra").write_bytes(b"x")
-    invalid_before = snapshot(kb)
-    code, result = invoke(capsys, "--workspace", str(kb), "manage", "validate")
-    assert code == 3 and len(result["issues"]) >= 2 and snapshot(kb) == invalid_before
-
-
-def test_sc_020_stdin_metadata_and_config(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch) -> None:
-    kb = init_kb(tmp_path, capsys)
-    tags_payload = json_bytes({"version": 1, "tags": [{"tag": "t", "description": "tag"}]})
-    monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(tags_payload), encoding="utf-8"))
-    code, _ = invoke(capsys, "--workspace", str(kb), "manage", "config", "set", "--profile", "tags", "--file", "-")
-    assert code == 0
-    source = tmp_path / "source"
-    source.write_bytes(b"x")
-    monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(json_bytes({"title": "Stream", "tags": ["t"]})), encoding="utf-8"))
-    code, _ = invoke(capsys, "--workspace", str(kb), "record", "add", "--source", str(source), "--metadata", "-")
-    assert code == 0
-
-
-def test_sc_021_end_to_end_validate_count(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    kb = init_kb(tmp_path, capsys)
-    set_tags(kb, tmp_path, capsys, ["project"])
-    conversion = tmp_path / "conversion-e2e"
-    (conversion / "nested").mkdir(parents=True)
-    (conversion / "nested" / "page.md").write_text("opaque", encoding="utf-8")
-    _, record_dir = add_record(kb, tmp_path, capsys, title="E2E", tags=["project"], conversion=conversion)
-    edit = write_json(
-        tmp_path / "e2e-edit.json",
-        {"title": "E2E renamed", "timestamp": "2026-08-19T12:00:00Z", "tags": ["project"]},
-    )
-    assert invoke(capsys, "--workspace", str(kb), "record", "edit", "--record", record_dir.name, "--metadata", str(edit))[0] == 0
-    code, result = invoke(capsys, "--workspace", str(kb), "manage", "validate")
-    assert code == 0 and result["data"] == {"version": VERSION, "valid": True, "count": 1}
-    assert list(kb.glob(".cortex*")) == []

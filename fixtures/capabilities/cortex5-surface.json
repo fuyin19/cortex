@@ -16,5 +16,8 @@
     "tags.json",
     "layout.json"
   ],
+  "tag_profile_version": 2,
+  "layout_profile_version": 2,
+  "record_operand": "<partition-tag>/<unit-folder>",
   "skill_count": 2
 }
