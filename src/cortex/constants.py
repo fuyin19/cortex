@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-VERSION = "5.0.0"
+VERSION = "5.1.0"
 DIST_NAME = "cortex-record-kb"
 
 PUBLIC_ROUTES = (
+    "registry.show",
+    "registry.validate",
+    "registry.resolve",
+    "registry.set",
     "manage.init",
     "manage.status",
     "manage.validate",
@@ -14,6 +18,10 @@ PUBLIC_ROUTES = (
     "record.add",
     "record.edit",
 )
+
+REGISTRY_VERSION = 1
+REGISTRY_FILENAME = "registry.json"
+ROOT_LOCK_FILENAME = ".cortex.lock"
 
 RECORD_SCHEMA = {
     "version": 1,

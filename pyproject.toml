@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cortex-record-kb"
-version = "5.0.0"
+version = "5.1.0"
 description = "Minimal single-writer record knowledge base"
 requires-python = ">=3.11"
 dependencies = []
@@ -22,4 +22,3 @@ where = ["src"]
 addopts = "-q"
 testpaths = ["tests"]
 pythonpath = ["src"]
-

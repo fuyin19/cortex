@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import os
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
-from .constants import DEFAULT_LAYOUT, DEFAULT_TAGS, RECORD_FIELDS, RECORD_SCHEMA, VERSION
+from .constants import DEFAULT_LAYOUT, DEFAULT_TAGS, RECORD_FIELDS, RECORD_SCHEMA, REGISTRY_FILENAME, ROOT_LOCK_FILENAME, VERSION
 from .errors import CortexError, Status, io_error, usage_error, validation_error
 from .jsonio import json_bytes, read_json_operand
-from .locking import workspace_lock
+from .locking import writer_lock, workspace_lock_path
 from .naming import suffixed_name, title_slug
 from .native import (
     checked_scandir,
@@ -28,6 +29,7 @@ from .native import (
     require_safe_component,
 )
 from .profiles import registered_tags, require_valid_profile, tag_groups, validate_record
+from .registry import canonical_registry, require_registry, resolve_bundle, validate_registry, validate_registry_value, validate_transition
 from .validation import ValidationReport, validate_record_directory, validate_workspace
 
 
@@ -179,10 +181,48 @@ def _require_initialized_lock_target(workspace: Path) -> None:
 
 
 class CortexService:
-    def __init__(self, workspace: Path | str) -> None:
+    def __init__(self, workspace: Path | str, *, kb_root: Path | str | None = None, bundle_id: str | None = None) -> None:
         self.workspace = Path(os.path.abspath(workspace))
+        self.kb_root = Path(os.path.abspath(kb_root)) if kb_root is not None else None
+        self.bundle_id = bundle_id
+
+    def _lock_path(self) -> Path:
+        if self.kb_root is not None:
+            return self.kb_root / ROOT_LOCK_FILENAME
+        return workspace_lock_path(self.workspace)
+
+    def _refresh_managed_workspace(self) -> None:
+        if self.kb_root is None:
+            return
+        assert self.bundle_id is not None
+        registry = require_registry(self.kb_root)
+        entry = resolve_bundle(self.kb_root, self.bundle_id, registry=registry)
+        selected = self.kb_root / entry["path"]
+        if selected != self.workspace:
+            raise validation_error("Bundle resolution changed before mutation", "bundle_resolution_changed", id=self.bundle_id)
+
+    @contextmanager
+    def _mutation_report(self) -> Iterator[ValidationReport]:
+        _require_initialized_lock_target(self.workspace)
+        lock_path = self._lock_path()
+        with writer_lock(lock_path) as lock_stream:
+            self._refresh_managed_workspace()
+            locked_schema = None
+            if lock_path == self.workspace / "profiles" / "record-schema.json":
+                lock_stream.seek(0)
+                locked_schema = lock_stream.read()
+            report = validate_workspace(self.workspace, locked_record_schema=locked_schema)
+            _raise_invalid_report(report)
+            yield report
 
     def init(self) -> Outcome:
+        root_lock = self.workspace.parent / ROOT_LOCK_FILENAME
+        if exists(root_lock):
+            with writer_lock(workspace_lock_path(self.workspace)):
+                return self._init_unlocked()
+        return self._init_unlocked()
+
+    def _init_unlocked(self) -> Outcome:
         root = self.workspace
         if exists(root):
             require_real_directory(root, code="workspace_not_directory")
@@ -225,24 +265,19 @@ class CortexService:
     def config_show(self, profile: str) -> Outcome:
         report = validate_workspace(self.workspace)
         _raise_invalid_report(report)
-        value = report.tags if profile == "tags" else report.layout
+        value = RECORD_SCHEMA if profile == "record" else report.tags if profile == "tags" else report.layout
         assert value is not None
         return Outcome(data={"profile": profile, "value": value})
 
     def config_set(self, profile: str, operand: str) -> Outcome:
         value, _ = read_json_operand(operand)
         require_valid_profile(profile, value)
-        _require_initialized_lock_target(self.workspace)
-        with workspace_lock(self.workspace) as lock_stream:
-            lock_stream.seek(0)
-            locked_schema = lock_stream.read()
-            report = validate_workspace(self.workspace, locked_record_schema=locked_schema)
-            _raise_invalid_report(report)
+        with self._mutation_report() as report:
             value = _read_operand_again(operand, value)
             require_valid_profile(profile, value)
             candidate_report = validate_workspace(
                 self.workspace,
-                locked_record_schema=locked_schema,
+                locked_record_schema=json_bytes(RECORD_SCHEMA),
                 tags_override=value if profile == "tags" else None,
                 layout_override=value if profile == "layout" else None,
             )
@@ -258,11 +293,7 @@ class CortexService:
         _precheck_metadata_shape(metadata)
         _safe_source(source_operand)
         _safe_conversion(conversion_operand)
-        _require_initialized_lock_target(self.workspace)
-        with workspace_lock(self.workspace) as lock_stream:
-            lock_stream.seek(0)
-            report = validate_workspace(self.workspace, locked_record_schema=lock_stream.read())
-            _raise_invalid_report(report)
+        with self._mutation_report() as report:
             assert report.tags is not None and report.layout is not None
             metadata = _read_operand_again(metadata_operand, metadata)
             registered = registered_tags(report.tags)
@@ -341,11 +372,7 @@ class CortexService:
         partition, unit = _record_operand(folder)
         metadata, _ = read_json_operand(metadata_operand)
         _precheck_metadata_shape(metadata)
-        _require_initialized_lock_target(self.workspace)
-        with workspace_lock(self.workspace) as lock_stream:
-            lock_stream.seek(0)
-            report = validate_workspace(self.workspace, locked_record_schema=lock_stream.read())
-            _raise_invalid_report(report)
+        with self._mutation_report() as report:
             assert report.tags is not None and report.layout is not None
             metadata = _read_operand_again(metadata_operand, metadata)
             _precheck_metadata_shape(metadata)
@@ -362,4 +389,107 @@ class CortexService:
             return Outcome(data={"record": folder, "path": folder})
 
 
-__all__ = ["CortexService", "Outcome"]
+class RegistryService:
+    def __init__(self, root: Path | str) -> None:
+        self.root = Path(os.path.abspath(root))
+
+    def show(self) -> Outcome:
+        value = require_registry(self.root)
+        return Outcome(data={"registry": value})
+
+    def validate(self) -> Outcome:
+        report = validate_registry(self.root)
+        count = len(report.value["bundles"]) if report.value is not None and isinstance(report.value.get("bundles"), list) else 0
+        data = {"version": VERSION, "valid": report.valid, "bundles": count}
+        if report.valid:
+            return Outcome(data=data)
+        return Outcome(status=Status.VALIDATION_ERROR, data=data, issues=report.issues)
+
+    def resolve(self, bundle_id: str) -> Outcome:
+        registry = require_registry(self.root)
+        entry = resolve_bundle(self.root, bundle_id, registry=registry)
+        return Outcome(data={"bundle_id": entry["id"], "path": entry["path"], "workspace": str(self.root / entry["path"]), "description": entry["description"]})
+
+    def _current_for_candidate(self, candidate: dict[str, Any]) -> dict[str, Any]:
+        report = validate_registry(self.root)
+        candidate_paths = {entry["path"] for entry in candidate["bundles"]}
+        blocking = [
+            item
+            for item in report.issues
+            if not (item["code"] == "orphan_bundle" and item.get("path") in candidate_paths)
+        ]
+        if blocking:
+            first = blocking[0]
+            raise validation_error(first["message"], first["code"], path=first.get("path"), issues=blocking)
+        if report.value is None:
+            raise validation_error("Registry is not readable", "registry_unreadable", path=REGISTRY_FILENAME)
+        return report.value
+
+    def set(self, operand: str) -> Outcome:
+        candidate_input, _ = read_json_operand(operand)
+        syntax_problems = validate_registry_value(candidate_input)
+        if syntax_problems:
+            first = syntax_problems[0]
+            raise validation_error(first["message"], first["code"], path=first.get("path"), issues=syntax_problems)
+        candidate = canonical_registry(candidate_input)
+        current_path = self.root / REGISTRY_FILENAME
+        if exists(current_path):
+            transition_problems = validate_transition(self._current_for_candidate(candidate), candidate)
+            if transition_problems:
+                first = transition_problems[0]
+                raise validation_error(first["message"], first["code"], path=first.get("path"), issues=transition_problems)
+        static = validate_registry(self.root, value_override=candidate_input)
+        if static.issues:
+            first = static.issues[0]
+            raise validation_error(first["message"], first["code"], path=first.get("path"), issues=static.issues)
+
+        assert static.value is not None
+        candidate = static.value
+        lock_path = self.root / ROOT_LOCK_FILENAME
+        if not exists(lock_path):
+            try:
+                with lock_path.open("xb"):
+                    pass
+            except FileExistsError:
+                pass
+            except OSError as exc:
+                raise io_error("KB-root lock could not be created", "lock_create_failed", path=str(lock_path), os_error=str(exc)) from exc
+        require_regular_file(lock_path, code="invalid_root_lock")
+        try:
+            if lock_path.stat().st_size != 0:
+                raise validation_error("KB-root lock must remain zero bytes", "invalid_root_lock", path=str(lock_path))
+        except OSError as exc:
+            raise io_error("KB-root lock could not be inspected", "lock_target_unreadable", path=str(lock_path), os_error=str(exc)) from exc
+        with writer_lock(lock_path):
+            candidate_input = _read_operand_again(operand, candidate)
+            checked = validate_registry(self.root, value_override=candidate_input)
+            if checked.issues:
+                first = checked.issues[0]
+                raise validation_error(first["message"], first["code"], path=first.get("path"), issues=checked.issues)
+            assert checked.value is not None
+            candidate = checked.value
+            current_path = self.root / REGISTRY_FILENAME
+            current: dict[str, Any] | None = None
+            if exists(current_path):
+                current = self._current_for_candidate(candidate)
+            problems: list[dict[str, Any]] = []
+            if current is not None:
+                problems.extend(validate_transition(current, candidate))
+            if problems:
+                first = problems[0]
+                raise validation_error(first["message"], first["code"], path=first.get("path"), issues=problems)
+            if current is None:
+                try:
+                    with current_path.open("xb") as stream:
+                        stream.write(json_bytes(candidate))
+                        stream.flush()
+                except FileExistsError as exc:
+                    raise CortexError("Registry was concurrently created", status=Status.BUSY, code="registry_busy", path=str(current_path)) from exc
+                except OSError as exc:
+                    raise io_error("Registry could not be created", "registry_create_failed", path=str(current_path), os_error=str(exc)) from exc
+            else:
+                _atomic_replace_json(current_path, candidate, "registry")
+        return Outcome(data={"registry": candidate})
+
+
+__all__ = ["CortexService", "Outcome", "RegistryService"]

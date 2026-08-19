@@ -8,13 +8,14 @@ from types import SimpleNamespace
 
 import pytest
 
+import cortex.native as native_module
 import cortex.service as service_module
 from cortex.cli import main
 from cortex.constants import DEFAULT_LAYOUT, DEFAULT_TAGS, PUBLIC_ROUTES, RECORD_SCHEMA, VERSION
 from cortex.jsonio import json_bytes
 from cortex.locking import workspace_lock
 from cortex.native import is_reparse_metadata
-from cortex.errors import io_error
+from cortex.errors import CortexError, io_error
 
 
 def invoke(capsys: pytest.CaptureFixture[str], *args: str) -> tuple[int, dict]:
@@ -109,13 +110,13 @@ def test_sc_001_init_is_profiles_only_and_unconfigured(tmp_path: Path, capsys: p
 
 
 def test_sc_002_closed_surface_and_version(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
-    assert len(PUBLIC_ROUTES) == 7
+    assert len(PUBLIC_ROUTES) == 11
     code, result = invoke(capsys, "--workspace", str(tmp_path / "x"), "build", "ingest")
     assert code == 2 and result["status"] == "usage_error"
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
-    assert capsys.readouterr().out.strip() == "cortex 5.0.0"
+    assert capsys.readouterr().out.strip() == "cortex 5.1.0"
 
 
 def test_sc_003_unconfigured_add_rejected_without_mutation(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -380,11 +381,93 @@ def test_sc_021_global_knowledge_and_surfaces_are_consistent() -> None:
     global_knowledge = (root / "docs" / "global-knowledge.md").read_text("utf-8")
     assert "record.json" in global_knowledge and "original/<one-source-file>" in global_knowledge
     assert "partition_by" in global_knowledge and "no mandatory `records/`" in global_knowledge
-    for relative in ("README.md", "AGENTS.md", "docs/record-kb-architecture.md", "skills/record-build/SKILL.md", "skills/record-manage/SKILL.md"):
+    for relative in ("README.md", "AGENTS.md", "docs/record-kb-architecture.md"):
         assert "global-knowledge.md" in (root / relative).read_text("utf-8")
+    for relative in ("skills/cortex-build/SKILL.md", "skills/cortex-manage/SKILL.md"):
+        text = (root / relative).read_text("utf-8")
+        assert "--bundle-id" in text and "write" in text
+        assert "docs/global-knowledge.md" not in text
     capability = json.loads((root / "fixtures" / "capabilities" / "cortex5-surface.json").read_text("utf-8"))
     assert capability["version"] == VERSION and capability["routes"] == list(PUBLIC_ROUTES)
     assert capability["tag_profile_version"] == 2 and capability["layout_profile_version"] == 2
+    plugin = json.loads((root / ".claude-plugin" / "plugin.json").read_text("utf-8"))
+    assert plugin["version"] == VERSION
+
+
+def test_windows_publish_retries_two_access_denials_then_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    attempts: list[tuple[str, str]] = []
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(native_module, "_IS_WINDOWS", True)
+    monkeypatch.setattr(native_module, "exists", lambda _path: False)
+    monkeypatch.setattr(native_module.time, "sleep", sleeps.append)
+
+    def transient_rename(left: str, right: str) -> None:
+        attempts.append((left, right))
+        if len(attempts) < 3:
+            raise PermissionError("transient access denied")
+
+    monkeypatch.setattr(native_module.os, "rename", transient_rename)
+    native_module.rename_no_replace(source, destination)
+
+    assert len(attempts) == 3
+    assert sleeps == [0.05, 0.10]
+
+
+def test_windows_publish_stops_if_destination_appears_before_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    attempts = 0
+    existence_checks = iter((False, True))
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(native_module, "_IS_WINDOWS", True)
+    monkeypatch.setattr(native_module, "exists", lambda _path: next(existence_checks))
+    monkeypatch.setattr(native_module.time, "sleep", sleeps.append)
+
+    def denied_rename(_left: str, _right: str) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise PermissionError("transient access denied")
+
+    monkeypatch.setattr(native_module.os, "rename", denied_rename)
+    with pytest.raises(FileExistsError):
+        native_module.rename_no_replace(source, destination)
+
+    assert attempts == 1
+    assert sleeps == [0.05]
+
+
+def test_windows_publish_does_not_retry_unrelated_os_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    attempts = 0
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(native_module, "_IS_WINDOWS", True)
+    monkeypatch.setattr(native_module, "exists", lambda _path: False)
+    monkeypatch.setattr(native_module.time, "sleep", sleeps.append)
+
+    def unrelated_failure(_left: str, _right: str) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise OSError("unrelated failure")
+
+    monkeypatch.setattr(native_module.os, "rename", unrelated_failure)
+    with pytest.raises(CortexError) as exc:
+        native_module.rename_no_replace(source, destination)
+
+    assert exc.value.code == "publish_failed"
+    assert attempts == 1
+    assert sleeps == []
 
 
 def test_sc_022_escaped_surrogate_text_is_rejected_without_temporary_residue(

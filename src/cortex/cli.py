@@ -10,7 +10,7 @@ from typing import Any, Sequence
 
 from .constants import PUBLIC_ROUTES, VERSION
 from .errors import CortexError, Status, io_error
-from .service import CortexService, Outcome
+from .service import CortexService, Outcome, RegistryService
 
 
 class ContractParser(argparse.ArgumentParser):
@@ -21,9 +21,20 @@ class ContractParser(argparse.ArgumentParser):
 def _parser() -> ContractParser:
     parser = ContractParser(prog="cortex")
     parser.add_argument("--json", action="store_true", help="emit one machine-readable Result")
-    parser.add_argument("--workspace", required=True, help="one Cortex 5 record-KB root")
+    parser.add_argument("--workspace", help="one Cortex 5 Bundle root")
+    parser.add_argument("--kb-root", help="one registered Cortex KB root")
+    parser.add_argument("--bundle-id", help="explicit registered Bundle id")
     parser.add_argument("--version", action="version", version=f"cortex {VERSION}")
     groups = parser.add_subparsers(dest="group", required=True)
+
+    registry = groups.add_parser("registry")
+    registry_commands = registry.add_subparsers(dest="registry_command", required=True)
+    registry_commands.add_parser("show")
+    registry_commands.add_parser("validate")
+    resolve = registry_commands.add_parser("resolve")
+    resolve.add_argument("--bundle-id", required=True, dest="resolve_bundle_id")
+    set_registry = registry_commands.add_parser("set")
+    set_registry.add_argument("--file", required=True)
 
     manage = groups.add_parser("manage")
     manage_commands = manage.add_subparsers(dest="manage_command", required=True)
@@ -33,7 +44,7 @@ def _parser() -> ContractParser:
     config = manage_commands.add_parser("config")
     config_commands = config.add_subparsers(dest="config_command", required=True)
     show = config_commands.add_parser("show")
-    show.add_argument("--profile", required=True, choices=("tags", "layout"))
+    show.add_argument("--profile", required=True, choices=("record", "tags", "layout"))
     set_command = config_commands.add_parser("set")
     set_command.add_argument("--profile", required=True, choices=("tags", "layout"))
     set_command.add_argument("--file", required=True)
@@ -51,7 +62,9 @@ def _parser() -> ContractParser:
 
 
 def _route(args: argparse.Namespace) -> str:
-    if args.group == "manage":
+    if args.group == "registry":
+        route = f"registry.{args.registry_command}"
+    elif args.group == "manage":
         if args.manage_command == "config":
             route = f"manage.config.{args.config_command}"
         else:
@@ -64,9 +77,35 @@ def _route(args: argparse.Namespace) -> str:
 
 
 def _dispatch(route: str, args: argparse.Namespace) -> Outcome:
-    service = CortexService(Path(args.workspace))
+    if route.startswith("registry."):
+        if args.workspace is not None or args.kb_root is None or args.bundle_id is not None:
+            raise CortexError("Registry routes require only --kb-root", status=Status.USAGE_ERROR, code="invalid_selector")
+        service = RegistryService(Path(args.kb_root))
+        if route == "registry.show":
+            return service.show()
+        if route == "registry.validate":
+            return service.validate()
+        if route == "registry.resolve":
+            return service.resolve(args.resolve_bundle_id)
+        if route == "registry.set":
+            return service.set(args.file)
+        raise CortexError("Route is not public", status=Status.USAGE_ERROR, code="unknown_route")
+
     if route == "manage.init":
+        if args.workspace is None or args.kb_root is not None or args.bundle_id is not None:
+            raise CortexError("manage init requires only --workspace", status=Status.USAGE_ERROR, code="invalid_selector")
+        service = CortexService(Path(args.workspace))
         return service.init()
+    if args.workspace is not None:
+        if args.kb_root is not None or args.bundle_id is not None:
+            raise CortexError("Use either --workspace or --kb-root with --bundle-id", status=Status.USAGE_ERROR, code="invalid_selector")
+        service = CortexService(Path(args.workspace))
+    else:
+        if args.kb_root is None or args.bundle_id is None:
+            raise CortexError("Managed bundle routes require --kb-root and --bundle-id", status=Status.USAGE_ERROR, code="bundle_selection_required")
+        registry_service = RegistryService(Path(args.kb_root))
+        resolved = registry_service.resolve(args.bundle_id).data
+        service = CortexService(Path(resolved["workspace"]), kb_root=Path(args.kb_root), bundle_id=args.bundle_id)
     if route == "manage.status":
         return service.status()
     if route == "manage.validate":

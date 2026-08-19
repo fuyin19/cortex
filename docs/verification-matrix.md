@@ -1,16 +1,14 @@
-# Cortex 5 verification matrix
+# Cortex 5.1 verification matrix
 
 | Scenario | Evidence |
 |---|---|
-| definitions and init | Global Knowledge matches runtime; profiles-only transitional tree; seven business routes |
-| metadata | exact record fields; strict timestamp/tags; generated UTC; canonical JSON bytes |
-| naming and layout | direct tag partitions; Unicode slug; UTF-8 cap; partition-local collision/suffix/reject; edit without move |
-| profiles | fixed Record Profile; named Tag Profile groups; Layout Profile linkage; cross-profile/tree replacement guards |
-| custody | source and conversion file/directory bytes; relative paths and empty directories preserved |
-| safety | no symlink/reparse/nonregular/unsafe/reserved/colliding paths; opaque nested content accepted |
-| concurrency | add, edit, tag set, and layout set return deterministic `busy/5` under the one lock |
-| failure atomicity | validation failures preserve valid state; existing/new-partition stage cleanup; atomic file replacement |
-| read behavior | status and validate are side-effect free and report version/valid/count/full issues |
-| hygiene | v5 version/package agreement; no `records/`, v4 schemas, OKF, recovery, artifact, or removed route residue |
+| Registry grammar | canonical v1; ID/path/description shape; exact and case-fold uniqueness; traversal/nesting/staging/reparse rejection |
+| Registry authority | valid targets; orphan reporting; immutable existing ID/path pairs; description updates and additions |
+| Explicit selection | resolve exact ID; managed routes require root plus ID; unknown/missing ID fails; init remains workspace-only |
+| Profile authority | show-only Record declaration; Tag 2 and Layout 2 linkage and whole-file write enforcement |
+| Locking | two Bundles share root busy/5; direct and managed calls share it; standalone uses Record Profile; reads are lock-free |
+| Atomicity | invalid first set leaves no state; registry/profile/edit replacement cleanup; record staging cleanup |
+| Record behavior | exact metadata fields; missing tag rejection; partition derivation; stable unit path; custody bytes |
+| Static surface | exact ResultEnvelope; 5.1.0 versions; two cortex skills; no migration/rename/delete/default/search/batch route |
 
-Terminal verification is a fresh `python -m pytest` followed by `python -m compileall -q src tests`.
+Terminal verification is a fresh `python -m pytest` followed by `python -m compileall -q src tests`, with caches and basetemp confined to the isolated worktree.

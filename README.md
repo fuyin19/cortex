@@ -1,46 +1,43 @@
-# Cortex Record KB 5.0
+# Cortex Record KB 5.1
 
-Cortex 5 is a minimal, portable record knowledge base. A workspace has three JSON profiles and direct tag-selected partition directories; there is no manifest, index, hidden identity, external state, artifact registry, plan, journal, or receipt. The authoritative definitions of a minimum knowledge unit and basic bundle are in [Global Knowledge](docs/global-knowledge.md).
+Cortex is a small, single-writer record knowledge base. Each Bundle owns its three profiles and direct tag-selected partitions. An optional KB root adds only canonical `registry.json`, a stable zero-byte `.cortex.lock`, and registered direct-child Bundles. The authoritative definitions are in [Global Knowledge](docs/global-knowledge.md).
 
 ```text
-<workspace>/
-  profiles/
-    record-schema.json
-    tags.json
-    layout.json
-  <partition-tag>/
-    <title-slug>/
-      record.json
-      original/<source-basename>
-      representations/markdown-conversion/...   # optional
+<kb-root>/                         <bundle>/
+  registry.json                     profiles/
+  .cortex.lock                        record-schema.json
+  <direct-child-bundle>/              tags.json
+                                      layout.json
+                                    <partition-tag>/<title-slug>/
+                                      record.json
+                                      original/<source-basename>
+                                      representations/markdown-conversion/... # optional
 ```
 
-## Commands
+Registry commands use `--kb-root`; managed Bundle commands add an explicit `--bundle-id`. There is no default or automatic Bundle selection.
 
 ```powershell
-cortex --json --workspace <kb> manage init
-cortex --json --workspace <kb> manage status
-cortex --json --workspace <kb> manage validate
-cortex --json --workspace <kb> manage config show --profile tags
-cortex --json --workspace <kb> manage config set --profile tags --file <tags.json-or->
-cortex --json --workspace <kb> manage config show --profile layout
-cortex --json --workspace <kb> manage config set --profile layout --file <layout.json-or->
-cortex --json --workspace <kb> record add --source <file> [--conversion <file-or-dir>] --metadata <json-or->
-cortex --json --workspace <kb> record edit --record <partition>/<unit> --metadata <json-or->
+cortex --json --kb-root <root> registry show
+cortex --json --kb-root <root> registry validate
+cortex --json --kb-root <root> registry resolve --bundle-id <id>
+Get-Content registry.json | cortex --json --kb-root <root> registry set --file -
+cortex --json --kb-root <root> --bundle-id <id> manage status
+cortex --json --kb-root <root> --bundle-id <id> manage validate
+cortex --json --kb-root <root> --bundle-id <id> manage config show --profile record|tags|layout
+cortex --json --kb-root <root> --bundle-id <id> manage config set --profile tags|layout --file <json-or->
+cortex --json --kb-root <root> --bundle-id <id> record add --source <file> [--conversion <file-or-dir>] --metadata <json-or->
+cortex --json --kb-root <root> --bundle-id <id> record edit --record <partition>/<unit> --metadata <json-or->
 ```
 
-Add and edit metadata require `title` and `tags`; `timestamp` is optional and defaults to the current UTC time with six fractional digits. Supplied timezone-aware RFC3339 timestamps are stored verbatim. An edit replaces metadata only and never moves the record directory or rewrites custody bytes.
+Direct `--workspace <bundle>` remains supported. `manage init` is workspace-only. Registry entries are immutable ID/path pairs: whole-file set may add pairs and change descriptions, but cannot remove or reassign a pair. Registry targets must validate, and complete unregistered direct-child Bundles are reported as orphans.
 
-Initialization creates only the profiles and is valid but nonoperational. Replace Tag Profile 2 with nonempty named groups, then set Layout Profile 2 `partition_by` to one of those group names. Each record must contain exactly one tag from that group. Cortex creates the corresponding partition only with its first unit. Unit names use `title-slug`, a 96-byte default component cap, partition-local collision handling, and `numeric-suffix` duplicates by default.
+Record Schema 1 is the Bundle's declaration within Cortex's supported dialect and currently fixes exactly `title`, `timestamp`, and `tags`; it is show-only. Tag Profile 2 and Layout Profile 2 are Bundle-owned policy and are enforced on every write. Cortex never adds a missing tag silently.
 
-`record add` returns the stable two-component POSIX operand `<partition-tag>/<unit-folder>`. Editing a title does not move the unit, and changing the partition tag is rejected.
+Registered-root mutations use the single `.cortex.lock`, including direct workspace calls to any sibling Bundle under that adopted root. Standalone mutations use `profiles/record-schema.json`. Both locks are nonblocking; contention returns `busy/5`. Reads do not lock or write.
 
-Every initialized mutation takes one nonblocking OS lock on `profiles/record-schema.json`. A competing writer receives `busy/5`. Reads never lock or mutate the workspace and do not promise a consistent snapshot during concurrent writes.
-
-## Development
+Development verification:
 
 ```powershell
-python -m pip install -e .
 python -m pytest
 python -m compileall -q src tests
 ```

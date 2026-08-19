@@ -1,4 +1,4 @@
-"""The one and only Cortex 5 writer lock."""
+"""The one and only lock selected for a Cortex mutation."""
 
 from __future__ import annotations
 
@@ -7,12 +7,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO, Iterator
 
-from .errors import CortexError, Status, io_error
+from .constants import ROOT_LOCK_FILENAME
+from .errors import CortexError, Status, io_error, validation_error
+from .native import exists, require_regular_file
 
 
 @contextmanager
-def workspace_lock(workspace: Path) -> Iterator[BinaryIO]:
-    path = workspace / "profiles" / "record-schema.json"
+def writer_lock(path: Path) -> Iterator[BinaryIO]:
     try:
         stream = path.open("r+b", buffering=0)
     except OSError as exc:
@@ -32,7 +33,7 @@ def workspace_lock(workspace: Path) -> Iterator[BinaryIO]:
             locked = True
         except OSError as exc:
             raise CortexError(
-                "Another Cortex writer holds the workspace lock",
+                "Another Cortex writer holds the selected lock",
                 status=Status.BUSY,
                 code="workspace_busy",
                 path=str(path),
@@ -56,4 +57,23 @@ def workspace_lock(workspace: Path) -> Iterator[BinaryIO]:
         stream.close()
 
 
-__all__ = ["workspace_lock"]
+def workspace_lock_path(workspace: Path) -> Path:
+    root_lock = workspace.parent / ROOT_LOCK_FILENAME
+    if exists(root_lock):
+        require_regular_file(root_lock, code="invalid_root_lock")
+        try:
+            if root_lock.stat().st_size != 0:
+                raise validation_error("KB-root lock must remain zero bytes", "invalid_root_lock", path=str(root_lock))
+        except OSError as exc:
+            raise io_error("KB-root lock could not be inspected", "lock_target_unreadable", path=str(root_lock), os_error=str(exc)) from exc
+        return root_lock
+    return workspace / "profiles" / "record-schema.json"
+
+
+@contextmanager
+def workspace_lock(workspace: Path) -> Iterator[BinaryIO]:
+    with writer_lock(workspace_lock_path(workspace)) as stream:
+        yield stream
+
+
+__all__ = ["writer_lock", "workspace_lock", "workspace_lock_path"]

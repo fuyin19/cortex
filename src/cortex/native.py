@@ -5,12 +5,15 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import time
 import unicodedata
 from pathlib import Path
 from .errors import CortexError, io_error, validation_error
 
 
 _FORBIDDEN = set('<>:"/\\|?*')
+_IS_WINDOWS = os.name == "nt"
+_WINDOWS_RENAME_RETRY_DELAYS = (0.05, 0.10, 0.20)
 _DEVICES = {
     "con",
     "prn",
@@ -209,6 +212,32 @@ def remove_tree_best_effort(path: Path) -> None:
 def rename_no_replace(source: Path, destination: Path) -> None:
     if exists(destination):
         raise FileExistsError(str(destination))
+    if _IS_WINDOWS:
+        last_error: PermissionError | None = None
+        for attempt in range(len(_WINDOWS_RENAME_RETRY_DELAYS) + 1):
+            if attempt:
+                time.sleep(_WINDOWS_RENAME_RETRY_DELAYS[attempt - 1])
+                if exists(destination):
+                    raise FileExistsError(str(destination))
+            try:
+                os.rename(native_path(source), native_path(destination))
+                return
+            except PermissionError as exc:
+                last_error = exc
+            except OSError as exc:
+                raise io_error(
+                    "Directory could not be published without replacement",
+                    "publish_failed",
+                    path=str(destination),
+                    os_error=str(exc),
+                ) from exc
+        assert last_error is not None
+        raise io_error(
+            "Directory could not be published without replacement",
+            "publish_failed",
+            path=str(destination),
+            os_error=str(last_error),
+        ) from last_error
     if os.name == "posix":
         import ctypes
 
