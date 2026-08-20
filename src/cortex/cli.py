@@ -143,18 +143,33 @@ def _error_result(command: str, exc: CortexError) -> dict[str, Any]:
     }
 
 
-def _render(payload: dict[str, Any], json_mode: bool) -> None:
+def _render(payload: dict[str, Any], json_mode: bool) -> bool:
     if json_mode:
-        sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
-        return
-    sys.stdout.write(f"status: {payload['status']}\n")
+        try:
+            rendered = json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + "\n"
+        except Exception as exc:
+            detail = ascii(str(exc))
+            _safe_write(sys.stderr, f"cortex: JSON output failure ({type(exc).__name__}): {detail}\n")
+            return False
+        _safe_write(sys.stdout, rendered)
+        return True
+    _safe_write(sys.stdout, f"status: {payload['status']}\n")
     data = payload["data"]
     for key, value in data.items():
         rendered = json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list, bool)) else str(value)
-        sys.stdout.write(f"{key}: {rendered}\n")
+        _safe_write(sys.stdout, f"{key}: {rendered}\n")
     for item in payload["issues"]:
         location = f" ({item['path']})" if item.get("path") else ""
-        sys.stdout.write(f"error: {item['code']}{location}: {item['message']}\n")
+        _safe_write(sys.stdout, f"error: {item['code']}{location}: {item['message']}\n")
+    return True
+
+
+def _safe_write(stream: Any, value: str) -> None:
+    try:
+        stream.write(value)
+    except UnicodeEncodeError:
+        encoding = getattr(stream, "encoding", None) or "utf-8"
+        stream.write(value.encode(encoding, errors="backslashreplace").decode(encoding))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -176,7 +191,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         payload = _error_result(command, io_error("Filesystem operation failed", os_error=str(exc)))
     except Exception as exc:
         payload = _error_result(command, io_error("Internal command failure", "internal_error", error_type=type(exc).__name__))
-    _render(payload, json_mode)
+    if not _render(payload, json_mode):
+        return int(Status.IO_ERROR.exit_code)
     return int(payload["exit_code"])
 
 

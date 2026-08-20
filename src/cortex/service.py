@@ -14,7 +14,7 @@ from .constants import DEFAULT_LAYOUT, DEFAULT_TAGS, RECORD_FIELDS, RECORD_SCHEM
 from .errors import CortexError, Status, io_error, usage_error, validation_error
 from .jsonio import json_bytes, read_json_operand
 from .locking import writer_lock, workspace_lock_path
-from .naming import suffixed_name, title_slug
+from .naming import partition_title_date_name, suffixed_name, title_slug
 from .native import (
     checked_scandir,
     copy_conversion,
@@ -111,11 +111,13 @@ def _precheck_metadata_shape(value: dict[str, Any]) -> None:
 def _complete_metadata(
     value: dict[str, Any],
     registered: set[str],
+    *,
+    auto_timestamp: bool = True,
 ) -> dict[str, Any]:
     _precheck_metadata_shape(value)
     candidate = {
         "title": value.get("title"),
-        "timestamp": value.get("timestamp", _now()),
+        "timestamp": value.get("timestamp", _now() if auto_timestamp else None),
         "tags": value.get("tags"),
     }
     problems = validate_record(candidate, registered, label="metadata")
@@ -297,13 +299,22 @@ class CortexService:
             assert report.tags is not None and report.layout is not None
             metadata = _read_operand_again(metadata_operand, metadata)
             registered = registered_tags(report.tags)
-            record = _complete_metadata(metadata, registered)
+            layout = report.layout
+            composite = layout["unit_name_strategy"] == "partition-title-date"
+            record = _complete_metadata(metadata, registered, auto_timestamp=not composite)
             partition, partition_tags = _partition_for_record(record, report.tags, report.layout)
             source = _safe_source(source_operand)
             _, conversion_entries = _safe_conversion(conversion_operand)
 
-            layout = report.layout
-            base = title_slug(record["title"], layout["max_component_length"])
+            if composite:
+                base = partition_title_date_name(
+                    partition,
+                    record["title"],
+                    record["timestamp"],
+                    layout["max_component_length"],
+                )
+            else:
+                base = title_slug(record["title"], layout["max_component_length"])
             partition_root = self.workspace / partition
             partition_exists = exists(partition_root)
             existing = {entry.name.casefold() for entry in checked_scandir(partition_root)} if partition_exists else set()
@@ -356,7 +367,12 @@ class CortexService:
                 if problems:
                     first = problems[0]
                     raise validation_error(first["message"], first["code"], path=first.get("path"), issues=problems)
-                rename_no_replace(temporary, destination)
+                try:
+                    rename_no_replace(temporary, destination)
+                except FileExistsError:
+                    if not composite:
+                        raise
+                    raise validation_error("Record folder already exists", "duplicate_record_name", path=folder)
             except CortexError:
                 if temporary_created:
                     _cleanup_staged_directory(temporary)

@@ -11,7 +11,7 @@ This document defines the minimum knowledge unit, Bundle, KB root, and authority
   representations/markdown-conversion/...   # optional
 ```
 
-`record.json` has exactly `title`, `timestamp`, and `tags`. Cortex preserves accepted source and conversion bytes and paths; content is opaque. The unit folder is derived once from title and does not move when metadata changes.
+`record.json` has exactly `title`, `timestamp`, and `tags`. Cortex preserves accepted source and conversion bytes and paths; content is opaque. The unit folder is derived once when the record is added and does not move when metadata changes.
 
 ## Bundle
 
@@ -24,7 +24,13 @@ This document defines the minimum knowledge unit, Bundle, KB root, and authority
   <partition-tag>/<unit>/
 ```
 
-There is no mandatory `records/` or `unstructured/` layer. Record Schema 1 is this Bundle's declaration of its metadata grammar. Cortex validates that declaration against its supported dialect, whose current only shape is the three fields above. Future fields require an explicitly selected versioned dialect. Tag Profile 2 owns ordered groups, tag names, and descriptions. Layout Profile 2 owns `partition_by`, component length, and duplicate handling within Cortex's fixed tag-partition and title-slug algorithms. Tag and Layout policy is enforced on every write.
+There is no mandatory `records/` or `unstructured/` layer. Record Schema 1 is this Bundle's declaration of its metadata grammar. Cortex validates that declaration against its supported dialect, whose current only shape is the three fields above. Future fields require an explicitly selected versioned dialect. Tag Profile 2 owns ordered groups, tag names, and descriptions. Layout Profile 2 owns `partition_by`, component length, duplicate handling, and one of two unit-name strategies. Tag and Layout policy is enforced on every write.
+
+The default `title-slug` strategy preserves the existing title-derived algorithm and permits `numeric-suffix` or `reject` duplicate handling. The opt-in `partition-title-date` strategy requires `reject` and requires the caller to supply a timezone-aware RFC3339 timestamp on record add. Its folder is `<exact-partition-tag>-<semantic-title>-<YYYYMMDD>`, using the lexical date in that timestamp. The partition tag is copied byte-for-byte: it is not normalized or case-folded.
+
+For `partition-title-date`, Cortex NFC-normalizes, outer-trims, and lowercases only the title. Whitespace, Unicode control characters in category `Cc`, the ASCII characters `<>:\"/\\|?*`, and literal hyphens collapse to one hyphen. Other Unicode, including fullwidth punctuation and non-ASCII dashes, is preserved. Edge dots, spaces, and hyphens are stripped. Only the title portion is truncated, at whole Unicode code-point boundaries, so the complete UTF-8 folder is at most `max_component_length` bytes. Every configured partition tag must leave room for both hyphens, eight date digits, and at least one title byte; otherwise profile validation reports `insufficient_unit_name_capacity`. Composite titles receive no Windows-device prefix.
+
+Duplicate checks use a locked case-folded inventory before staging. A publish-time collision in the composite strategy is also reported as `duplicate_record_name`, and Cortex removes only its owned stage. The legacy strategy retains its existing duplicate and publication behavior.
 
 Initialization creates only the profiles and is valid but nonoperational. Configure tags before linking `layout.json.partition_by` to a tag group. Each record then has exactly one tag from that group, and its direct parent equals that tag.
 

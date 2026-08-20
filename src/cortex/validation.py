@@ -332,6 +332,20 @@ def validate_workspace(
             too_long = True
         if too_long:
             issues.append(issue("partition_name_too_long", "Partition tag exceeds max_component_length", path="profiles/tags.json", tag=tag))
+        if layout_value["unit_name_strategy"] == "partition-title-date":
+            try:
+                insufficient_capacity = len(tag.encode("utf-8")) + 2 + 8 + 1 > maximum
+            except UnicodeEncodeError:
+                insufficient_capacity = True
+            if insufficient_capacity:
+                issues.append(
+                    issue(
+                        "insufficient_unit_name_capacity",
+                        "Partition tag and date leave no room for a semantic title",
+                        path="profiles/layout.json#/max_component_length",
+                        tag=tag,
+                    )
+                )
         key = tag.casefold()
         previous = folded_partitions.get(key)
         if previous is not None and previous != tag:

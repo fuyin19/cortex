@@ -8,7 +8,7 @@ Cortex is a small, single-writer record knowledge base. Each Bundle owns its thr
   .cortex.lock                        record-schema.json
   <direct-child-bundle>/              tags.json
                                       layout.json
-                                    <partition-tag>/<title-slug>/
+                                    <partition-tag>/<unit-folder>/
                                       record.json
                                       original/<source-basename>
                                       representations/markdown-conversion/... # optional
@@ -31,7 +31,9 @@ cortex --json --kb-root <root> --bundle-id <id> record edit --record <partition>
 
 Direct `--workspace <bundle>` remains supported. `manage init` is workspace-only. Registry entries are immutable ID/path pairs: whole-file set may add pairs and change descriptions, but cannot remove or reassign a pair. Registry targets must validate, and complete unregistered direct-child Bundles are reported as orphans.
 
-Record Schema 1 is the Bundle's declaration within Cortex's supported dialect and currently fixes exactly `title`, `timestamp`, and `tags`; it is show-only. Tag Profile 2 and Layout Profile 2 are Bundle-owned policy and are enforced on every write. Cortex never adds a missing tag silently.
+Record Schema 1 is the Bundle's declaration within Cortex's supported dialect and currently fixes exactly `title`, `timestamp`, and `tags`; it is show-only. Tag Profile 2 and Layout Profile 2 are Bundle-owned policy and are enforced on every write. Cortex never adds a missing tag silently. Layout Profile 2 defaults to legacy `title-slug`; opt-in `partition-title-date` requires duplicate rejection and explicit timezone-aware RFC3339 timestamps on add, and creates `<exact-partition-tag>-<semantic-title>-<YYYYMMDD>` within the UTF-8 component limit. Record edits never rename a unit.
+
+JSON output is compact ASCII-safe text with the same exact five-field Result contract; decoding it restores all Unicode even under a narrow host encoding such as CP936. Human output remains on stdout and escapes characters the active encoding cannot represent.
 
 Registered-root mutations use the single `.cortex.lock`, including direct workspace calls to any sibling Bundle under that adopted root. Standalone mutations use `profiles/record-schema.json`. Both locks are nonblocking; contention returns `busy/5`. Reads do not lock or write.
 
