@@ -1,4 +1,4 @@
-"""Hard-coded Cortex 5 profile and record validators."""
+"""Hard-coded Cortex 6 profile and record validators."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def _exact_keys(value: dict[str, Any], expected: Iterable[str], *, label: str) -
 
 def validate_record_schema(value: dict[str, Any], *, label: str = "profiles/record-schema.json") -> list[dict[str, Any]]:
     if value != RECORD_SCHEMA:
-        return [issue("invalid_record_schema", "record-schema.json must equal the fixed Cortex 5 profile", path=label)]
+        return [issue("invalid_record_schema", "record-schema.json must equal the fixed Cortex 6 profile", path=label)]
     return []
 
 
@@ -92,43 +92,25 @@ def validate_layout_profile(value: dict[str, Any], *, label: str = "profiles/lay
         value,
         (
             "version",
-            "partition_by",
-            "partition_name_strategy",
+            "unit_name_tag_group",
             "unit_name_strategy",
             "max_component_length",
             "duplicate_name_strategy",
         ),
         label=label,
     )
-    if type(value.get("version")) is not int or value.get("version") != 2:
-        issues.append(issue("invalid_profile_version", "Layout profile version must be integer 2", path=label))
-    partition_by = value.get("partition_by")
-    if partition_by is not None and (not _strict_text(partition_by) or not partition_by):
-        issues.append(issue("invalid_partition_group", "partition_by must be null or a nonempty group name", path=label))
-    if value.get("partition_name_strategy") != "tag":
-        issues.append(issue("invalid_partition_name_strategy", "partition_name_strategy must be tag", path=label))
-    unit_name_strategy = value.get("unit_name_strategy")
-    if unit_name_strategy not in {"title-slug", "partition-title-date"}:
-        issues.append(
-            issue(
-                "invalid_unit_name_strategy",
-                "unit_name_strategy must be title-slug or partition-title-date",
-                path=label,
-            )
-        )
+    if type(value.get("version")) is not int or value.get("version") != 3:
+        issues.append(issue("invalid_profile_version", "Layout profile version must be integer 3", path=label))
+    group = value.get("unit_name_tag_group")
+    if group is not None and (not _strict_text(group) or not group):
+        issues.append(issue("invalid_unit_name_tag_group", "unit_name_tag_group must be null or a nonempty string", path=label))
+    if value.get("unit_name_strategy") != "tag-title-date":
+        issues.append(issue("invalid_unit_name_strategy", "unit_name_strategy must be tag-title-date", path=label))
     maximum = value.get("max_component_length")
     if type(maximum) is not int or not 16 <= maximum <= 200:
         issues.append(issue("invalid_component_limit", "max_component_length must be an integer from 16 through 200", path=label))
-    if value.get("duplicate_name_strategy") not in {"numeric-suffix", "reject"}:
-        issues.append(issue("invalid_duplicate_strategy", "duplicate_name_strategy must be numeric-suffix or reject", path=label))
-    elif unit_name_strategy == "partition-title-date" and value.get("duplicate_name_strategy") != "reject":
-        issues.append(
-            issue(
-                "invalid_duplicate_strategy",
-                "partition-title-date requires duplicate_name_strategy reject",
-                path=label,
-            )
-        )
+    if value.get("duplicate_name_strategy") != "reject":
+        issues.append(issue("invalid_duplicate_strategy", "duplicate_name_strategy must be reject", path=label))
     return issues
 
 

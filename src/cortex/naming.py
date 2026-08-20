@@ -5,10 +5,21 @@ from __future__ import annotations
 import unicodedata
 
 from .errors import validation_error
-from .native import is_windows_device_name
+from .native import is_windows_device_name, require_safe_component
 
 
 _WINDOWS_FORBIDDEN = set('<>:"/\\|?*')
+REQUIRED_UNIDATA_VERSION = "14.0.0"
+
+
+def require_naming_runtime() -> None:
+    if unicodedata.unidata_version != REQUIRED_UNIDATA_VERSION:
+        raise validation_error(
+            "Layout 3 naming requires Unicode database 14.0.0",
+            "unsupported_unicode_database",
+            required=REQUIRED_UNIDATA_VERSION,
+            actual=unicodedata.unidata_version,
+        )
 
 
 def truncate_utf8(value: str, maximum: int) -> str:
@@ -48,8 +59,9 @@ def title_slug(title: str, maximum: int) -> str:
 
 
 def semantic_title(title: str) -> str:
-    """Normalize title text for the partition-title-date strategy."""
+    """Normalize title text for the tag-title-date strategy."""
 
+    require_naming_runtime()
     value = unicodedata.normalize("NFC", title).strip().lower()
     output: list[str] = []
     hyphen = False
@@ -68,11 +80,11 @@ def semantic_title(title: str) -> str:
     return normalized
 
 
-def partition_title_date_name(partition: str, title: str, timestamp: str, maximum: int) -> str:
-    """Build the opt-in composite unit name without altering the partition tag."""
+def tag_title_date_name(tag: str, title: str, timestamp: str, maximum: int) -> str:
+    """Build the normative Layout 3 unit name without altering the selected tag."""
 
     date_stamp = timestamp[:10].replace("-", "")
-    fixed = len(partition.encode("utf-8")) + 2 + len(date_stamp.encode("ascii"))
+    fixed = len(tag.encode("utf-8")) + 2 + len(date_stamp.encode("ascii"))
     available = maximum - fixed
     if available < 1:
         raise validation_error(
@@ -85,12 +97,13 @@ def partition_title_date_name(partition: str, title: str, timestamp: str, maximu
             "Layout component limit cannot retain a semantic title codepoint",
             "insufficient_unit_name_capacity",
         )
-    folder = f"{partition}-{middle}-{date_stamp}"
+    folder = f"{tag}-{middle}-{date_stamp}"
     if len(folder.encode("utf-8")) > maximum:
         raise validation_error(
             "Record-folder name exceeds max_component_length",
             "insufficient_unit_name_capacity",
         )
+    require_safe_component(folder, allow_profiles=False, label=folder)
     return folder
 
 

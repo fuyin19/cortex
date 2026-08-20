@@ -1,0 +1,13 @@
+{
+  "distribution": "cortex-record-kb",
+  "import": "cortex",
+  "version": "6.0.0",
+  "routes": ["registry.show", "registry.validate", "registry.resolve", "registry.set", "manage.init", "manage.status", "manage.validate", "manage.config.show", "manage.config.set", "record.add", "record.edit", "record.show", "record.delete"],
+  "profiles": ["record-schema.json", "tags.json", "layout.json"],
+  "profile_versions": {"record": 1, "tag": 2, "layout": 3, "registry": 1},
+  "unit_name_strategy": "tag-title-date",
+  "record_operand": "<exact-unit-name>",
+  "delete_precondition": "expected-tree-sha256",
+  "public_migration_route": false,
+  "skill_count": 2
+}

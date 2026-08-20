@@ -1,57 +1,11 @@
-# Cortex 5 global knowledge
+# Cortex 6 global knowledge
 
-This document defines the minimum knowledge unit, Bundle, KB root, and authority roles.
+A standalone `--workspace` is exactly one Bundle. Its root contains only `profiles/` and direct record-unit directories. A registered KB root contains canonical Registry 1, a stable zero-byte `.cortex.lock`, direct-child Bundles, and unrelated ordinary entries ignored by discovery. Direct managed operations re-resolve the selected Bundle under the shared nonblocking writer lock.
 
-## Minimum knowledge unit
+Layout 3 fields are exactly `version: 3`, `unit_name_tag_group` (null or nonempty string), `unit_name_strategy: tag-title-date`, strict-integer `max_component_length` from 16 through 200 (default 96), and `duplicate_name_strategy: reject`. Null is empty-initialization-only. Once a record exists, Layout bytes are immutable. Tag replacements must preserve every existing record's exact selected naming tag and derived unit name; unrelated safe Tag 2 changes remain possible.
 
-```text
-<unit>/
-  record.json
-  original/<one-source-file>
-  representations/markdown-conversion/...   # optional
-```
+The date is the lexical date from an aware RFC3339 record timestamp. Title semantics are Python 3.11/UCD 14.0.0: NFC, `strip`, lowercase, separator scanning over whitespace, category Cc, ASCII `<>:"/\\|?*`, and ASCII hyphen; collapse separators, strip `. -`, truncate only the title by whole UTF-8 codepoints, strip again, then join exact tag, title, and YYYYMMDD. The final component is safety/length checked without escaping or device-name prefixing.
 
-`record.json` has exactly `title`, `timestamp`, and `tags`. Cortex preserves accepted source and conversion bytes and paths; content is opaque. The unit folder is derived once when the record is added and does not move when metadata changes.
+The unit tree SHA-256 domain is `CORTEX_UNIT_TREE_V1\0`, then u64be unit-name UTF-8 length and bytes. Root is omitted. Descendant directories/files sort by raw relative POSIX UTF-8 bytes. A directory contributes `0x44 + u64be(path length) + path`; a file contributes `0x46 + u64be(path length) + path + u64be(size) + raw bytes`. Modes and times are excluded. Two no-follow passes must match.
 
-## Bundle
-
-```text
-<bundle>/
-  profiles/
-    record-schema.json
-    tags.json
-    layout.json
-  <partition-tag>/<unit>/
-```
-
-There is no mandatory `records/` or `unstructured/` layer. Record Schema 1 is this Bundle's declaration of its metadata grammar. Cortex validates that declaration against its supported dialect, whose current only shape is the three fields above. Future fields require an explicitly selected versioned dialect. Tag Profile 2 owns ordered groups, tag names, and descriptions. Layout Profile 2 owns `partition_by`, component length, duplicate handling, and one of two unit-name strategies. Tag and Layout policy is enforced on every write.
-
-The default `title-slug` strategy preserves the existing title-derived algorithm and permits `numeric-suffix` or `reject` duplicate handling. The opt-in `partition-title-date` strategy requires `reject` and requires the caller to supply a timezone-aware RFC3339 timestamp on record add. Its folder is `<exact-partition-tag>-<semantic-title>-<YYYYMMDD>`, using the lexical date in that timestamp. The partition tag is copied byte-for-byte: it is not normalized or case-folded.
-
-For `partition-title-date`, Cortex NFC-normalizes, outer-trims, and lowercases only the title. Whitespace, Unicode control characters in category `Cc`, the ASCII characters `<>:\"/\\|?*`, and literal hyphens collapse to one hyphen. Other Unicode, including fullwidth punctuation and non-ASCII dashes, is preserved. Edge dots, spaces, and hyphens are stripped. Only the title portion is truncated, at whole Unicode code-point boundaries, so the complete UTF-8 folder is at most `max_component_length` bytes. Every configured partition tag must leave room for both hyphens, eight date digits, and at least one title byte; otherwise profile validation reports `insufficient_unit_name_capacity`. Composite titles receive no Windows-device prefix.
-
-Duplicate checks use a locked case-folded inventory before staging. A publish-time collision in the composite strategy is also reported as `duplicate_record_name`, and Cortex removes only its owned stage. The legacy strategy retains its existing duplicate and publication behavior.
-
-Initialization creates only the profiles and is valid but nonoperational. Configure tags before linking `layout.json.partition_by` to a tag group. Each record then has exactly one tag from that group, and its direct parent equals that tag.
-
-## KB root and Registry v1
-
-```text
-<kb-root>/
-  registry.json
-  .cortex.lock
-  <registered-direct-child-bundle>/
-```
-
-Canonical `registry.json` is `{version:1,bundles:[{id,path,description}]}`. IDs are stable lowercase kebab-case names. Paths are safe direct children only. Existing ID/path pairs cannot be removed or reassigned; descriptions may change and new pairs may be added. Targets must be valid Bundles. A direct child with complete profiles but no entry is an orphan. Ordinary root files, `.git`, and non-Bundle directories are not discovered or registered.
-
-## Authority roles
-
-- Cortex owns the supported profile grammar, deterministic validation, path derivation, and every public mutation boundary.
-- Each Bundle owns its Record, Tag, and Layout profile instances as authoritative local policy within that grammar.
-- The KB root Registry owns only stable Bundle-ID-to-direct-child mappings and descriptions; it does not select a Bundle.
-- The caller or installed skill supplies an explicit Bundle ID and proposed data. It may orchestrate Cortex calls but never writes durable KB files directly, invents a Bundle path, or silently creates a tag.
-
-A registered root has one stable zero-byte `.cortex.lock` for every mutation across its direct-child Bundles and registry. A direct workspace call whose parent has that lock uses it even when the Bundle is not registered. A standalone Bundle locks the first byte of its Record Profile. Reads remain lock-free.
-
-Cortex has no default Bundle, semantic selection, nested registry, general JSON Schema engine, index, journal, receipt, crash recovery, content-addressed artifact system, rename, move, batch, search, or delete API.
+Delete is deliberately not crash atomic. It creates no recovery state and reports partial failure honestly. Cortex does not claim protection for ACLs, hard links, handle identity, or noncooperating external-filesystem TOCTOU races.

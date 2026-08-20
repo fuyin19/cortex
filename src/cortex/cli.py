@@ -1,4 +1,4 @@
-"""Closed Cortex 5 command-line interface."""
+"""Closed Cortex 6 command-line interface."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ class ContractParser(argparse.ArgumentParser):
 def _parser() -> ContractParser:
     parser = ContractParser(prog="cortex")
     parser.add_argument("--json", action="store_true", help="emit one machine-readable Result")
-    parser.add_argument("--workspace", help="one Cortex 5 Bundle root")
+    parser.add_argument("--workspace", help="one Cortex 6 Bundle root")
     parser.add_argument("--kb-root", help="one registered Cortex KB root")
     parser.add_argument("--bundle-id", help="explicit registered Bundle id")
     parser.add_argument("--version", action="version", version=f"cortex {VERSION}")
@@ -58,6 +58,11 @@ def _parser() -> ContractParser:
     edit = record_commands.add_parser("edit")
     edit.add_argument("--record", required=True)
     edit.add_argument("--metadata", required=True)
+    show_record = record_commands.add_parser("show")
+    show_record.add_argument("--record", required=True)
+    delete = record_commands.add_parser("delete")
+    delete.add_argument("--record", required=True)
+    delete.add_argument("--expected-tree-sha256", required=True)
     return parser
 
 
@@ -118,6 +123,10 @@ def _dispatch(route: str, args: argparse.Namespace) -> Outcome:
         return service.record_add(args.source, args.conversion, args.metadata)
     if route == "record.edit":
         return service.record_edit(args.record, args.metadata)
+    if route == "record.show":
+        return service.record_show(args.record)
+    if route == "record.delete":
+        return service.record_delete(args.record, args.expected_tree_sha256)
     raise CortexError("Route is not public", status=Status.USAGE_ERROR, code="unknown_route")
 
 

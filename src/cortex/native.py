@@ -1,4 +1,4 @@
-"""Small, explicit filesystem safety seam for Cortex 5."""
+"""Small, explicit filesystem safety seam for Cortex 6."""
 
 from __future__ import annotations
 

@@ -1,8 +1,10 @@
-"""Cortex 5 record-KB operations."""
+"""Cortex 6 record-KB operations."""
 
 from __future__ import annotations
 
 import os
+import hashlib
+import stat
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -12,15 +14,16 @@ from typing import Any, Iterator
 
 from .constants import DEFAULT_LAYOUT, DEFAULT_TAGS, RECORD_FIELDS, RECORD_SCHEMA, REGISTRY_FILENAME, ROOT_LOCK_FILENAME, VERSION
 from .errors import CortexError, Status, io_error, usage_error, validation_error
-from .jsonio import json_bytes, read_json_operand
+from .jsonio import json_bytes, loads_object, read_json_operand
 from .locking import writer_lock, workspace_lock_path
-from .naming import partition_title_date_name, suffixed_name, title_slug
+from .naming import tag_title_date_name
 from .native import (
     checked_scandir,
     copy_conversion,
     copy_regular,
     exists,
     inspect_conversion,
+    is_reparse_metadata,
     native_path,
     reject_reparse_ancestry,
     rename_no_replace,
@@ -29,6 +32,7 @@ from .native import (
     require_safe_component,
 )
 from .profiles import registered_tags, require_valid_profile, tag_groups, validate_record
+from .tree import inventory_unit
 from .registry import canonical_registry, require_registry, resolve_bundle, validate_registry, validate_registry_value, validate_transition
 from .validation import ValidationReport, validate_record_directory, validate_workspace
 
@@ -127,33 +131,73 @@ def _complete_metadata(
     return candidate
 
 
-def _partition_for_record(record: dict[str, Any], tags: dict[str, Any], layout: dict[str, Any]) -> tuple[str, set[str]]:
-    partition_by = layout["partition_by"]
-    if partition_by is None:
+def _naming_tag_for_record(record: dict[str, Any], tags: dict[str, Any], layout: dict[str, Any]) -> tuple[str, set[str]]:
+    group_name = layout["unit_name_tag_group"]
+    if group_name is None:
         raise validation_error("Bundle must be configured before records can be added", "bundle_not_operational")
     groups = tag_groups(tags)
-    if partition_by not in groups:
-        raise validation_error("partition_by does not name an existing tag group", "unknown_partition_group", group=partition_by)
-    partition_tags = {item["tag"] for item in groups[partition_by]}
-    selected = [tag for tag in record["tags"] if tag in partition_tags]
+    if group_name not in groups:
+        raise validation_error("unit_name_tag_group does not name an existing tag group", "unknown_unit_name_tag_group", group=group_name)
+    naming_tags = {item["tag"] for item in groups[group_name]}
+    selected = [tag for tag in record["tags"] if tag in naming_tags]
     if len(selected) != 1:
         raise validation_error(
-            "Record must contain exactly one tag from the configured partition group",
-            "partition_tag_count",
+            "Record must contain exactly one tag from the configured naming group",
+            "unit_name_tag_count",
             tags=selected,
         )
-    return selected[0], partition_tags
+    return selected[0], naming_tags
 
 
-def _record_operand(value: str) -> tuple[str, str]:
-    if "\\" in value or value.startswith("/"):
-        raise validation_error("Record operand must be a relative two-component POSIX path", "invalid_record_operand", path=value)
-    parts = value.split("/")
-    if len(parts) != 2 or any(part in {"", ".", ".."} for part in parts):
-        raise validation_error("Record operand must be a relative two-component POSIX path", "invalid_record_operand", path=value)
-    for part in parts:
-        require_safe_component(part, label=value)
-    return parts[0], parts[1]
+def _record_operand(value: str) -> str:
+    if "\\" in value or "/" in value or value in {"", ".", ".."}:
+        raise validation_error("Record operand must be one exact safe component", "invalid_record_operand", path=value)
+    require_safe_component(value, allow_profiles=False, label=value)
+    return value
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(native_path(path), "rb") as stream:
+        while block := stream.read(1024 * 1024):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _residue_count(root: Path) -> int:
+    count = 1
+    def visit(directory: Path) -> None:
+        nonlocal count
+        for entry in os.scandir(native_path(directory)):
+            count += 1
+            meta = entry.stat(follow_symlinks=False)
+            if is_reparse_metadata(meta):
+                continue
+            if stat.S_ISDIR(meta.st_mode):
+                visit(Path(entry.path))
+    visit(root)
+    return count
+
+
+def _conversion_shape(entries: list[tuple[str, Path, bool]], source: Path) -> None:
+    files = [relative for relative, _path, directory in entries if not directory]
+    if any(relative.casefold() == "record.json" for relative in files):
+        raise validation_error(
+            "Converter payload must not contain reserved Cortex record.json",
+            "reserved_record_metadata",
+            path="record.json",
+        )
+    roots = {relative.split("/", 1)[0] for relative, _path, _directory in entries}
+    top_md = [name for name in files if "/" not in name and name.casefold().endswith(".md")]
+    top_json = [name for name in files if "/" not in name and name.casefold().endswith(".json")]
+    src_files = [name for name in files if name.startswith("src/") and name.count("/") == 1]
+    allowed = {top_md[0] if top_md else "", top_json[0] if top_json else "", src_files[0] if src_files else ""}
+    other = [name for name in files if name not in allowed and not name.startswith("assets/")]
+    if len(top_md) != 1 or len(top_json) != 1 or Path(top_md[0]).stem != Path(top_json[0]).stem or len(src_files) != 1 or other or not roots <= {top_md[0], top_json[0], "src", "assets"}:
+        raise validation_error("Conversion must have the exact canonical full bundle shape", "invalid_conversion_shape")
+    converted_source = next(path for relative, path, directory in entries if not directory and relative == src_files[0])
+    if Path(src_files[0]).name != source.name or _sha256(converted_source) != _sha256(source):
+        raise validation_error("--source must equal conversion src by basename and SHA-256", "conversion_source_mismatch")
 
 
 def _safe_source(source_text: str) -> Path:
@@ -251,7 +295,7 @@ class CortexService:
                     stream.flush()
         except OSError as exc:
             raise io_error("Workspace profiles could not be initialized", "init_failed", path=str(root), os_error=str(exc)) from exc
-        return Outcome(data={"version": VERSION, "partition_by": None})
+        return Outcome(data={"version": VERSION, "unit_name_tag_group": None})
 
     def status(self) -> Outcome:
         report = validate_workspace(self.workspace)
@@ -277,6 +321,8 @@ class CortexService:
         with self._mutation_report() as report:
             value = _read_operand_again(operand, value)
             require_valid_profile(profile, value)
+            if profile == "layout" and report.count and value != report.layout:
+                raise validation_error("Layout is immutable after the first record", "layout_change_forbidden")
             candidate_report = validate_workspace(
                 self.workspace,
                 locked_record_schema=json_bytes(RECORD_SCHEMA),
@@ -297,71 +343,49 @@ class CortexService:
         _safe_conversion(conversion_operand)
         with self._mutation_report() as report:
             assert report.tags is not None and report.layout is not None
+            if report.layout["unit_name_tag_group"] is None:
+                raise validation_error("Bundle must be configured before records can be added", "bundle_not_operational")
             metadata = _read_operand_again(metadata_operand, metadata)
             registered = registered_tags(report.tags)
             layout = report.layout
-            composite = layout["unit_name_strategy"] == "partition-title-date"
-            record = _complete_metadata(metadata, registered, auto_timestamp=not composite)
-            partition, partition_tags = _partition_for_record(record, report.tags, report.layout)
+            record = _complete_metadata(metadata, registered, auto_timestamp=False)
+            naming_tag, _naming_tags = _naming_tag_for_record(record, report.tags, report.layout)
             source = _safe_source(source_operand)
             _, conversion_entries = _safe_conversion(conversion_operand)
-
-            if composite:
-                base = partition_title_date_name(
-                    partition,
-                    record["title"],
-                    record["timestamp"],
-                    layout["max_component_length"],
-                )
-            else:
-                base = title_slug(record["title"], layout["max_component_length"])
-            partition_root = self.workspace / partition
-            partition_exists = exists(partition_root)
-            existing = {entry.name.casefold() for entry in checked_scandir(partition_root)} if partition_exists else set()
-            folder = base
+            if conversion_entries is None and source.suffix.casefold() != ".md":
+                raise validation_error("Markdown-only add requires a .md source", "invalid_source_only")
+            if conversion_entries is not None:
+                _conversion_shape(conversion_entries, source)
+            folder = tag_title_date_name(naming_tag, record["title"], record["timestamp"], layout["max_component_length"])
+            existing = {entry.name.casefold() for entry in checked_scandir(self.workspace) if entry.name != "profiles"}
             if folder.casefold() in existing:
-                if layout["duplicate_name_strategy"] == "reject":
-                    raise validation_error("Record folder already exists", "duplicate_record_name", path=folder)
-                number = 2
-                while True:
-                    candidate = suffixed_name(base, number, layout["max_component_length"])
-                    if candidate.casefold() not in existing:
-                        folder = candidate
-                        break
-                    number += 1
-
-            if partition_exists:
-                temporary = partition_root / f".cortex-add-{uuid.uuid4().hex}"
-                destination = partition_root / folder
-                staged_unit = temporary
-            else:
-                temporary = self.workspace / f".cortex-add-{uuid.uuid4().hex}"
-                destination = partition_root
-                staged_unit = temporary / folder
+                raise validation_error("Record folder already exists", "duplicate_record_name", path=folder)
+            temporary = self.workspace / f".cortex-add-{uuid.uuid4().hex}"
+            destination = self.workspace / folder
+            staged_unit = temporary
             temporary_created = False
             try:
                 temporary.mkdir(exist_ok=False)
                 temporary_created = True
-                if not partition_exists:
-                    staged_unit.mkdir(exist_ok=False)
                 with (staged_unit / "record.json").open("xb") as stream:
                     stream.write(json_bytes(record))
                     stream.flush()
-                original = staged_unit / "original"
-                original.mkdir(exist_ok=False)
-                copy_regular(source, original / source.name)
                 if conversion_entries is not None:
-                    representations = staged_unit / "representations"
-                    representations.mkdir(exist_ok=False)
-                    copy_conversion(conversion_entries, representations / "markdown-conversion")
+                    for relative, item_source, directory in conversion_entries:
+                        target = staged_unit.joinpath(*relative.split("/"))
+                        if directory:
+                            target.mkdir(exist_ok=False)
+                        else:
+                            copy_regular(item_source, target)
+                else:
+                    copy_regular(source, staged_unit / source.name)
                 problems = validate_record_directory(
                     staged_unit,
                     folder,
                     registered=registered,
                     maximum=layout["max_component_length"],
-                    label_root=partition,
-                    partition_tags=partition_tags,
-                    expected_partition=partition,
+                    tags=report.tags,
+                    layout=layout,
                     check_folder=False,
                 )
                 if problems:
@@ -370,8 +394,6 @@ class CortexService:
                 try:
                     rename_no_replace(temporary, destination)
                 except FileExistsError:
-                    if not composite:
-                        raise
                     raise validation_error("Record folder already exists", "duplicate_record_name", path=folder)
             except CortexError:
                 if temporary_created:
@@ -381,28 +403,88 @@ class CortexService:
                 if temporary_created:
                     _cleanup_staged_directory(temporary)
                 raise io_error("Record could not be staged", "record_stage_failed", path=str(destination), os_error=str(exc)) from exc
-            operand = f"{partition}/{folder}"
-            return Outcome(data={"record": operand, "path": operand})
+            return Outcome(data={"record": folder, "path": folder})
 
     def record_edit(self, folder: str, metadata_operand: str) -> Outcome:
-        partition, unit = _record_operand(folder)
+        unit = _record_operand(folder)
         metadata, _ = read_json_operand(metadata_operand)
         _precheck_metadata_shape(metadata)
         with self._mutation_report() as report:
             assert report.tags is not None and report.layout is not None
             metadata = _read_operand_again(metadata_operand, metadata)
             _precheck_metadata_shape(metadata)
-            unit_path = self.workspace / partition / unit
+            unit_path = self.workspace / unit
             if not exists(unit_path):
                 raise validation_error("Record folder does not exist", "record_not_found", path=folder)
             record_path = unit_path / "record.json"
             registered = registered_tags(report.tags)
-            record = _complete_metadata(metadata, registered)
-            selected_partition, _ = _partition_for_record(record, report.tags, report.layout)
-            if selected_partition != partition:
-                raise validation_error("Record edits cannot change the partition tag", "partition_change_forbidden", path=folder)
+            record = _complete_metadata(metadata, registered, auto_timestamp=False)
+            current = read_json_operand(str(record_path))[0]
+            old_tag, _ = _naming_tag_for_record(current, report.tags, report.layout)
+            new_tag, _ = _naming_tag_for_record(record, report.tags, report.layout)
+            if record["title"] != current["title"] or record["timestamp"] != current["timestamp"] or new_tag != old_tag:
+                raise validation_error("Title, timestamp, and selected naming tag are immutable", "record_identity_change_forbidden", path=folder)
             _atomic_replace_json(record_path, record, "edit")
             return Outcome(data={"record": folder, "path": folder})
+
+    def record_show(self, folder: str) -> Outcome:
+        unit = _record_operand(folder)
+        with self._mutation_report() as report:
+            unit_path = self.workspace / unit
+            if not exists(unit_path):
+                raise validation_error("Record folder does not exist", "record_not_found", path=folder)
+            inventory = inventory_unit(unit_path, unit)
+            record_bytes = (unit_path / "record.json").read_bytes()
+            metadata = loads_object(record_bytes, label=f"{unit}/record.json")
+            confirmation = inventory_unit(unit_path, unit)
+            if confirmation.sha256 != inventory.sha256 or confirmation.manifest != inventory.manifest:
+                raise validation_error("Unit changed while record metadata was read", "tree_changed_during_read", path=unit)
+            return Outcome(data={
+                "record": unit,
+                "tree_sha256": inventory.sha256,
+                "record_json_sha256": hashlib.sha256(record_bytes).hexdigest(),
+                "metadata": metadata,
+                "manifest": [{"path": item.relative, "type": item.kind, **({"size": item.size} if item.size is not None else {})} for item in inventory.manifest],
+            })
+
+    def record_delete(self, folder: str, expected: str) -> Outcome:
+        unit = _record_operand(folder)
+        if len(expected) != 64 or expected.lower() != expected or any(ch not in "0123456789abcdef" for ch in expected):
+            raise validation_error("Expected tree digest must be lowercase 64-character SHA-256", "invalid_expected_tree_sha256")
+        with self._mutation_report() as report:
+            unit_path = self.workspace / unit
+            if not exists(unit_path):
+                raise validation_error("Record folder does not exist", "record_not_found", path=unit)
+            inventory = inventory_unit(unit_path, unit)
+            if inventory.sha256 != expected:
+                raise validation_error("Unit tree digest does not match", "tree_digest_mismatch", expected=expected, actual=inventory.sha256)
+            ordered = sorted(inventory.manifest, key=lambda item: (item.relative.count("/"), item.relative.encode("utf-8")), reverse=True)
+            first_failed = None
+            try:
+                for item in ordered:
+                    path = unit_path.joinpath(*item.relative.split("/"))
+                    first_failed = item.relative
+                    meta = os.lstat(native_path(path))
+                    if is_reparse_metadata(meta) or (item.kind == "file" and not stat.S_ISREG(meta.st_mode)) or (item.kind == "directory" and not stat.S_ISDIR(meta.st_mode)):
+                        raise OSError("authorized entry type changed")
+                    if item.kind == "file":
+                        os.unlink(native_path(path))
+                    else:
+                        os.rmdir(native_path(path))
+                first_failed = "."
+                os.rmdir(native_path(unit_path))
+            except OSError as exc:
+                try:
+                    remaining = _residue_count(unit_path) if exists(unit_path) else 0
+                    issues = [{"code": "delete_incomplete", "message": "Record deletion stopped at first failure", "path": first_failed or ".", "details": {"os_error": str(exc)}}]
+                except OSError as scan_exc:
+                    remaining = None
+                    issues = [
+                        {"code": "delete_incomplete", "message": "Record deletion stopped at first failure", "path": first_failed or ".", "details": {"os_error": str(exc)}},
+                        {"code": "residue_unreadable", "message": "Deletion residue could not be counted", "details": {"os_error": str(scan_exc)}},
+                    ]
+                return Outcome(status=Status.IO_ERROR, data={"record": unit, "partial": True, "first_failed_relative_path": first_failed or ".", "remaining_entry_count": remaining}, issues=issues)
+            return Outcome(data={"record": unit, "deleted": True, "tree_sha256": expected})
 
 
 class RegistryService:
