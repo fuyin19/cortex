@@ -9,5 +9,13 @@
   "record_operand": "<exact-unit-name>",
   "delete_precondition": "expected-tree-sha256",
   "public_migration_route": false,
-  "skill_count": 2
+  "skill_count": 2,
+  "agent_entrypoint": "absolute-python-3.11 -I skill-local-runner",
+  "global_command": false,
+  "skill_runtime": {
+    "artifact": "cortex_record_kb-6.0.0-py3-none-any.whl",
+    "offline": true,
+    "independently_complete": true,
+    "payloads_byte_identical": true
+  }
 }

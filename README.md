@@ -2,6 +2,8 @@
 
 Cortex is a small, single-writer record knowledge base. A Bundle has `profiles/` and zero or more direct flat record units. Cortex 6.0.0 accepts Record 1, Tag 2, Layout 3, and Registry 1 only; Layout 2 has no runtime fallback.
 
+Agent use is self-contained in each complete `cortex-build` or `cortex-manage` skill directory. Invoke its `scripts/run_cortex.py` with an absolute Python 3.11 path and `-I`; the runner validates and imports the skill's pinned offline wheel. Installing `cortex-record-kb` intentionally creates no global `cortex` command, and skill execution never consults PATH, an ambient package, pip, or the network. Upgrade a skill by replacing the complete directory, not only `SKILL.md`. Regenerate and verify both byte-identical payloads with `python tools/package_skill_runtime.py` and `python tools/package_skill_runtime.py --check`.
+
 ```text
 <bundle>/
   profiles/{record-schema.json,tags.json,layout.json}
@@ -20,8 +22,8 @@ Layout 3 names are `<exact-selected-tag>-<semantic-title>-<YYYYMMDD>`. Naming re
 Public record operations use one exact safe component:
 
 ```text
-cortex --json --workspace <bundle> record show --record <unit>
-cortex --json --workspace <bundle> record delete --record <unit> --expected-tree-sha256 <lowercase64>
+"<ABSOLUTE-PYTHON-3.11>" -I "<ABSOLUTE-CORTEX-MANAGE-SKILL-DIR>/scripts/run_cortex.py" --json --workspace <bundle> record show --record <unit>
+"<ABSOLUTE-PYTHON-3.11>" -I "<ABSOLUTE-CORTEX-MANAGE-SKILL-DIR>/scripts/run_cortex.py" --json --workspace <bundle> record delete --record <unit> --expected-tree-sha256 <lowercase64>
 ```
 
 Show is an authorization read under the writer lock and returns `tree_sha256`, exact metadata derived from the hashed `record.json`, and the second-pass manifest. Delete recomputes and compares the token, deletes only the authorized manifest leaf-first, stops at first failure, and reports `delete_incomplete` with partial residue data. There is no trash, tombstone, journal, or recovery route.

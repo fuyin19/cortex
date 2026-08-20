@@ -1,5 +1,7 @@
 # Cortex 6 record architecture
 
+The repository is the single runtime source. `tools/package_skill_runtime.py` builds one deterministic dependency-free wheel offline, verifies the source/package/constant version contract and absence of console scripts, then writes byte-identical pinned payloads to both repository skills. Each skill is independently complete; its isolated runner validates ordinary no-follow paths, manifest, archive metadata, and a runner-pinned SHA-256 before importing only from that wheel. This delivery boundary does not add a public route or persistent Cortex state.
+
 Record add validates the selected Bundle under the correct standalone or registered-root lock, computes one normative `tag-title-date` component, rejects converter-owned top-level `record.json` as reserved metadata before staging, creates one short owned root sibling stage, writes canonical `record.json`, copies either an exact converter bundle or one Markdown source, validates the staged unit, and publishes with same-parent no-replace rename. No numeric suffix is attempted.
 
 Record edit accepts one exact component. `title`, full timestamp, and selected naming tag are immutable; only non-naming tags may change. `record show` is lock-taking authorization: registry selection is refreshed, the Bundle validates, and a two-pass no-follow inventory produces both the token and returned manifest. Metadata comes from the exact hashed `record.json` bytes.

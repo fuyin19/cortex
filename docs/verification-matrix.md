@@ -33,10 +33,28 @@ This table reproduces the frozen EvalSpec semantics without renumbering or reint
 | sc027 | Markdown-only legacy units lift to the exact Cortex 6 Markdown-only shape. |
 | sc028 | No public migration route or installed migration entry point exists. |
 | sc029 | The project-summer pilot gate requires exactly 27 total, 25 full, and 2 Markdown-only records and stops on reproducible drift. |
-| sc030 | Both repository skills require one exact pinned Cortex 6.0.0 executable and forbid fallback. |
+| sc030 | Both repository skills carry one exact pinned Cortex 6.0.0 runtime and forbid global-command fallback. |
 | sc031 | Implementation, AGENTS, documentation, both skills, and the capability fixture agree on the complete contract. |
 | sc032 | Full pytest, compileall, and one-to-one sc001-sc032 semantic mapping gates pass. |
 
 Additional repair evidence covers repository-bound migration imports against a hostile ambient `cortex`, no-follow profile operands, exact owned-stage collision handling, linked/reparse legacy wrappers with external sentinels, and pre-stage/pre-output rejection of converter payload `record.md + record.json`.
+
+The runtime-delivery EvalSpec is independently frozen below; the `runtime-` prefix keeps its identifiers distinct from the existing product-contract scenarios.
+
+| Runtime scenario | Frozen semantic requirement |
+|---|---|
+| runtime-sc001 | Each complete skill copy runs Cortex 6.0.0 independently. |
+| runtime-sc002 | Both skills carry byte-identical runner, manifest, and wheel payloads. |
+| runtime-sc003 | PATH Cortex 4 sentinels are never invoked. |
+| runtime-sc004 | Hostile PYTHONPATH and ambient Cortex modules are ignored by isolated launch. |
+| runtime-sc005 | Runtime launch performs no child install, network, cache, or update action. |
+| runtime-sc006 | Missing, truncated, modified, linked, and wrong-version runtime inputs fail before CLI dispatch. |
+| runtime-sc007 | Coordinated wheel and manifest tampering fails against the runner-pinned digest before import. |
+| runtime-sc008 | Offline deterministic regeneration and Candidate parity checks pass. |
+| runtime-sc009 | The embedded wheel has exact Cortex metadata, no dependencies, and no console script. |
+| runtime-sc010 | A disposable wheel projection creates no command launcher. |
+| runtime-sc011 | The Cortex 6 public routes, package version, and source CLI contract remain unchanged. |
+| runtime-sc012 | Source and both bundled runtimes produce equal Results and disposable Bundle trees. |
+| runtime-sc013 | Skills, documentation, capability fixture, and runtime scenario mapping agree. |
 
 All dynamic tests use disposable temporary directories; none reads or mutates the corpus. Required terminal gates are `python -m pytest` and `python -m compileall -q src tests tools`.

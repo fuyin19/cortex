@@ -9,9 +9,6 @@ description = "Minimal single-writer record knowledge base"
 requires-python = ">=3.11,<3.12"
 dependencies = []
 
-[project.scripts]
-cortex = "cortex.cli:main"
-
 [tool.setuptools]
 package-dir = {"" = "src"}
 

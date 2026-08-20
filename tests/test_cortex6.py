@@ -583,19 +583,20 @@ def test_sc028_sc029_public_surface_and_exact_pilot_gate() -> None:
     root = Path(__file__).parents[1]
     assert not any("migrate" in route for route in PUBLIC_ROUTES)
     pyproject = (root / "pyproject.toml").read_text("utf-8"); assert 'version = "6.0.0"' in pyproject and 'requires-python = ">=3.11,<3.12"' in pyproject
-    scripts_section = pyproject.split("[project.scripts]", 1)[1].split("[", 1)[0]
-    assert "cortex =" in scripts_section and "migrat" not in scripts_section.lower()
+    assert "[project.scripts]" not in pyproject and "cortex =" not in pyproject and "migrat" not in pyproject.lower()
     combined = "\n".join((root / name).read_text("utf-8") for name in ["README.md", "docs/global-knowledge.md", "docs/record-kb-architecture.md", "docs/verification-matrix.md", "skills/cortex-build/SKILL.md", "skills/cortex-manage/SKILL.md"])
     for text in ("exactly 27", "25 full", "2 Markdown-only", "record delete", "tree_sha256", "6.0.0", "project-summer"):
         assert text in combined
 
 
-def test_sc030_sc031_surface_fixture_skills_and_executable_gate_agree() -> None:
+def test_sc030_sc031_surface_fixture_skills_and_runtime_gate_agree() -> None:
     root = Path(__file__).parents[1]; fixture = json.loads((root / "fixtures/capabilities/cortex6-surface.json").read_text("utf-8"))
     assert fixture["version"] == VERSION and fixture["routes"] == list(PUBLIC_ROUTES) and fixture["public_migration_route"] is False
+    assert fixture["global_command"] is False and fixture["skill_runtime"]["payloads_byte_identical"] is True
     for skill in ("cortex-build", "cortex-manage"):
         text = (root / "skills" / skill / "SKILL.md").read_text("utf-8")
-        assert "cortex 6.0.0" in text and "CORTEX-ABSOLUTE-EXECUTABLE" in text and "do not fall back" in text.lower()
+        assert "cortex 6.0.0" in text and "ABSOLUTE-PYTHON-3.11" in text and "scripts/run_cortex.py" in text
+        assert "do not fall back" in text.lower() and "CORTEX-ABSOLUTE-EXECUTABLE" not in text
 
 
 def test_sc032_one_to_one_evalspec_mapping_has_exact_frozen_semantics() -> None:
@@ -629,7 +630,7 @@ def test_sc032_one_to_one_evalspec_mapping_has_exact_frozen_semantics() -> None:
         "sc027": "Markdown-only legacy units lift to the exact Cortex 6 Markdown-only shape.",
         "sc028": "No public migration route or installed migration entry point exists.",
         "sc029": "The project-summer pilot gate requires exactly 27 total, 25 full, and 2 Markdown-only records and stops on reproducible drift.",
-        "sc030": "Both repository skills require one exact pinned Cortex 6.0.0 executable and forbid fallback.",
+        "sc030": "Both repository skills carry one exact pinned Cortex 6.0.0 runtime and forbid global-command fallback.",
         "sc031": "Implementation, AGENTS, documentation, both skills, and the capability fixture agree on the complete contract.",
         "sc032": "Full pytest, compileall, and one-to-one sc001-sc032 semantic mapping gates pass.",
     }
