@@ -1,4 +1,4 @@
-"""Cortex 6.0 minimal single-writer record knowledge base."""
+"""Cortex 7.0 minimal single-writer record knowledge base."""
 
 from .constants import VERSION
 

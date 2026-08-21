@@ -1,35 +1,16 @@
-# Cortex Record KB 6.0
+# Cortex Record KB 7.0
 
-Cortex is a small, single-writer record knowledge base. A Bundle has `profiles/` and zero or more direct flat record units. Cortex 6.0.0 accepts Record 1, Tag 2, Layout 3, and Registry 1 only; Layout 2 has no runtime fallback.
+Cortex 7.0.0 is a small, single-writer record KB using Record 1, Tag 2, Layout 4, and Registry 1. A Bundle contains `profiles/` and nonempty tag-named partitions; each partition directly contains canonical record units. Layout 3 is rejected by normal runtime operation.
 
-Agent use is self-contained in each complete `cortex-build` or `cortex-manage` skill directory. Invoke its `scripts/run_cortex.py` with an absolute Python 3.11 path and `-I`; the runner validates and imports the skill's pinned offline wheel. Installing `cortex-record-kb` intentionally creates no global `cortex` command, and skill execution never consults PATH, an ambient package, pip, or the network. Upgrade a skill by replacing the complete directory, not only `SKILL.md`. Regenerate and verify both byte-identical payloads with `python tools/package_skill_runtime.py` and `python tools/package_skill_runtime.py --check`.
+Layout 4 uses `partition_tag_group`, exact `partition_name_strategy: tag`, `unit_name_strategy: tag-title-date`, component limit 16..200, and duplicate rejection. An empty Bundle may temporarily have a null group; add requires exactly one selected tag and derives both `<partition>/<tag-title-date-unit>` without new CLI arguments.
 
-```text
-<bundle>/
-  profiles/{record-schema.json,tags.json,layout.json}
-  <project-title-date>/
-    record.json
-    <converter-stem>.md
-    <converter-stem>.json
-    src/<one-original-source>
-    assets/...                         # optional, safe opaque bytes
-```
-
-Markdown-only units contain exactly `record.json` and one original-name `.md`. Legacy `original/` and `representations/` wrappers are invalid. Full adds copy conversion children once; `--source` must have the same basename and SHA-256 as the conversion's sole `src/` file. Top-level `record.json` is reserved Cortex metadata and is never accepted from a converter payload.
-
-Layout 3 names are `<exact-selected-tag>-<semantic-title>-<YYYYMMDD>`. Naming requires Python 3.11 and UCD 14.0.0. `unit_name_tag_group: null` is valid only while empty; add returns `validation_error` / `bundle_not_operational` before staging. Duplicates and case-fold collisions are rejected; suffixes do not exist.
-
-Public record operations use one exact safe component:
+Record edit/show/delete require separate exact operands:
 
 ```text
-"<ABSOLUTE-PYTHON-3.11>" -I "<ABSOLUTE-CORTEX-MANAGE-SKILL-DIR>/scripts/run_cortex.py" --json --workspace <bundle> record show --record <unit>
-"<ABSOLUTE-PYTHON-3.11>" -I "<ABSOLUTE-CORTEX-MANAGE-SKILL-DIR>/scripts/run_cortex.py" --json --workspace <bundle> record delete --record <unit> --expected-tree-sha256 <lowercase64>
+<ABSOLUTE-PYTHON-3.11> -I <SKILL>/scripts/run_cortex.py --json --workspace <bundle> record show --partition <tag> --record <unit>
+<ABSOLUTE-PYTHON-3.11> -I <SKILL>/scripts/run_cortex.py --json --workspace <bundle> record delete --partition <tag> --record <unit> --expected-tree-sha256 <lowercase64>
 ```
 
-Show is an authorization read under the writer lock and returns `tree_sha256`, exact metadata derived from the hashed `record.json`, and the second-pass manifest. Delete recomputes and compares the token, deletes only the authorized manifest leaf-first, stops at first failure, and reports `delete_incomplete` with partial residue data. There is no trash, tombstone, journal, or recovery route.
+Show/delete authorization uses `CORTEX_UNIT_TREE_V2`, which binds partition then unit before the no-follow manifest. Deleting the last unit removes its partition. Registered mutations and authorization share the stable root lock; standalone operations use the Record Profile byte lock.
 
-The noninstalled `tools/migrate_legacy_layout3.py` binds itself to this repository's sibling `src/cortex` 6.0.0 package, without an installation or `PYTHONPATH`. It only plans an observed legacy direct-unit grammar or builds a separate absent output after detached plan-digest approval. It never follows a source link/reparse point, changes source, cuts over, adopts a Registry, installs Cortex, or exposes a product migration route.
-
-Pilot runbook: pin and verify exactly one Cortex 6.0.0 executable/Candidate; run read-only plan against `project-summer`; require exactly 27 units (25 full, 2 Markdown-only) or stop on reproducible drift; approve the detached digest; obtain separate authority for build, cutover, and later Registry adoption.
-
-Verify with `python -m pytest` and `python -m compileall -q src tests tools`.
+`tools/migrate_legacy_layout3.py` is noninstalled and nonpublic. It only plans/builds a source-read-only Layout 3 → Layout 4 candidate outside the KB and repository roots on the same volume. Planning requires canonical Record 1, Tag 2, and Layout 3 bytes and exact Layout 3 unit names. Build requires the exact initialized Registry 1 KB root and its derived repository boundary; omitted or false boundary operands fail closed. It has no cutover command. The `ibd-projects` acceptance gate is exactly 30 partitions, 395 units, 25 full, and 370 Markdown-only, preserving unit names, `record.json` bytes, payload bytes, and relative paths.

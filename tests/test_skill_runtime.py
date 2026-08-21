@@ -16,14 +16,14 @@ from cortex.constants import PUBLIC_ROUTES, VERSION
 
 ROOT = Path(__file__).parents[1]
 SKILL_NAMES = ("cortex-build", "cortex-manage")
-WHEEL_NAME = "cortex_record_kb-6.0.0-py3-none-any.whl"
+WHEEL_NAME = "cortex_record_kb-7.0.0-py3-none-any.whl"
 PAYLOAD_PATHS = (
     Path("scripts/run_cortex.py"),
     Path("scripts/runtime-manifest.json"),
     Path("scripts/vendor") / WHEEL_NAME,
 )
 RUNTIME_SCENARIOS = {
-    "runtime-sc001": "Each complete skill copy runs Cortex 6.0.0 independently.",
+    "runtime-sc001": "Each complete skill copy runs Cortex 7.0.0 independently.",
     "runtime-sc002": "Both skills carry byte-identical runner, manifest, and wheel payloads.",
     "runtime-sc003": "PATH Cortex 4 sentinels are never invoked.",
     "runtime-sc004": "Hostile PYTHONPATH and ambient Cortex modules are ignored by isolated launch.",
@@ -33,7 +33,7 @@ RUNTIME_SCENARIOS = {
     "runtime-sc008": "Offline deterministic regeneration and Candidate parity checks pass.",
     "runtime-sc009": "The embedded wheel has exact Cortex metadata, no dependencies, and no console script.",
     "runtime-sc010": "A disposable wheel projection creates no command launcher.",
-    "runtime-sc011": "The Cortex 6 public routes, package version, and source CLI contract remain unchanged.",
+    "runtime-sc011": "The Cortex 7 public routes, package version, and source CLI contract remain closed.",
     "runtime-sc012": "Source and both bundled runtimes produce equal Results and disposable Bundle trees.",
     "runtime-sc013": "Skills, documentation, capability fixture, and runtime scenario mapping agree.",
 }
@@ -74,7 +74,7 @@ def test_runtime_sc001_independent_complete_skill_copies(tmp_path: Path) -> None
         copied = _copy_skill(tmp_path, name)
         result = _runner(copied, "--version")
         assert result.returncode == 0
-        assert result.stdout == "cortex 6.0.0\n" and result.stderr == ""
+        assert result.stdout == "cortex 7.0.0\n" and result.stderr == ""
         shutil.rmtree(copied)
 
 
@@ -97,7 +97,7 @@ def test_runtime_sc003_path_cortex4_sentinel_is_never_used(tmp_path: Path) -> No
     env = dict(os.environ)
     env["PATH"] = str(sentinel) + os.pathsep + env.get("PATH", "")
     result = _runner(_skill("cortex-build"), "--version", env=env)
-    assert result.returncode == 0 and result.stdout == "cortex 6.0.0\n" and result.stderr == ""
+    assert result.returncode == 0 and result.stdout == "cortex 7.0.0\n" and result.stderr == ""
     assert not marker.exists()
 
 
@@ -116,7 +116,7 @@ def test_runtime_sc004_hostile_pythonpath_and_ambient_module_are_ignored(tmp_pat
     env = dict(os.environ)
     env["PYTHONPATH"] = str(hostile)
     result = _runner(_skill("cortex-manage"), "--version", env=env)
-    assert result.returncode == 0 and result.stdout == "cortex 6.0.0\n" and result.stderr == ""
+    assert result.returncode == 0 and result.stdout == "cortex 7.0.0\n" and result.stderr == ""
     assert not marker.exists()
 
 
@@ -222,8 +222,8 @@ def test_runtime_sc009_wheel_metadata_has_no_dependencies_or_command() -> None:
     wheel = _skill("cortex-build") / "scripts" / "vendor" / WHEEL_NAME
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
-        metadata = archive.read("cortex_record_kb-6.0.0.dist-info/METADATA").decode("utf-8")
-    assert "Name: cortex-record-kb\n" in metadata and "Version: 6.0.0\n" in metadata
+        metadata = archive.read("cortex_record_kb-7.0.0.dist-info/METADATA").decode("utf-8")
+    assert "Name: cortex-record-kb\n" in metadata and "Version: 7.0.0\n" in metadata
     assert "Requires-Dist:" not in metadata
     assert not any(name.endswith("entry_points.txt") for name in names)
     pyproject = (ROOT / "pyproject.toml").read_text("utf-8")
@@ -241,7 +241,7 @@ def test_runtime_sc010_disposable_projection_has_no_launcher(tmp_path: Path) -> 
 
 
 def test_runtime_sc011_source_contract_is_unchanged() -> None:
-    assert VERSION == "6.0.0"
+    assert VERSION == "7.0.0"
     assert tuple(PUBLIC_ROUTES) == (
         "registry.show", "registry.validate", "registry.resolve", "registry.set",
         "manage.init", "manage.status", "manage.validate", "manage.config.show", "manage.config.set",
@@ -285,7 +285,7 @@ def test_runtime_sc012_source_and_bundles_have_equal_results_and_trees(tmp_path:
 
 
 def test_runtime_sc013_surfaces_and_exact_mapping_agree() -> None:
-    fixture = json.loads((ROOT / "fixtures" / "capabilities" / "cortex6-surface.json").read_text("utf-8"))
+    fixture = json.loads((ROOT / "fixtures" / "capabilities" / "cortex7-surface.json").read_text("utf-8"))
     assert fixture["global_command"] is False
     assert fixture["agent_entrypoint"] == "absolute-python-3.11 -I skill-local-runner"
     assert fixture["skill_runtime"] == {
@@ -301,7 +301,7 @@ def test_runtime_sc013_surfaces_and_exact_mapping_agree() -> None:
             "skills/cortex-build/SKILL.md", "skills/cortex-manage/SKILL.md",
         )
     )
-    for required in ("-I", "skill-local", "6.0.0", "complete", "global"):
+    for required in ("-I", "skill-local", "7.0.0", "complete", "global"):
         assert required in combined
     matrix = (ROOT / "docs" / "verification-matrix.md").read_text("utf-8")
     actual: dict[str, str] = {}

@@ -1,21 +1,17 @@
 {
   "distribution": "cortex-record-kb",
   "import": "cortex",
-  "version": "6.0.0",
+  "version": "7.0.0",
   "routes": ["registry.show", "registry.validate", "registry.resolve", "registry.set", "manage.init", "manage.status", "manage.validate", "manage.config.show", "manage.config.set", "record.add", "record.edit", "record.show", "record.delete"],
   "profiles": ["record-schema.json", "tags.json", "layout.json"],
-  "profile_versions": {"record": 1, "tag": 2, "layout": 3, "registry": 1},
+  "profile_versions": {"record": 1, "tag": 2, "layout": 4, "registry": 1},
+  "partition_name_strategy": "tag",
   "unit_name_strategy": "tag-title-date",
-  "record_operand": "<exact-unit-name>",
+  "record_operand": {"partition": "<exact-partition-tag>", "record": "<exact-unit-name>"},
+  "tree_digest": "CORTEX_UNIT_TREE_V2",
   "delete_precondition": "expected-tree-sha256",
   "public_migration_route": false,
-  "skill_count": 2,
   "agent_entrypoint": "absolute-python-3.11 -I skill-local-runner",
   "global_command": false,
-  "skill_runtime": {
-    "artifact": "cortex_record_kb-6.0.0-py3-none-any.whl",
-    "offline": true,
-    "independently_complete": true,
-    "payloads_byte_identical": true
-  }
+  "skill_runtime": {"artifact": "cortex_record_kb-7.0.0-py3-none-any.whl", "offline": true, "independently_complete": true, "payloads_byte_identical": true}
 }

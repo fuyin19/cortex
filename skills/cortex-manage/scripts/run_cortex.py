@@ -13,10 +13,10 @@ import sys
 import zipfile
 
 
-EXPECTED_VERSION = "6.0.0"
+EXPECTED_VERSION = "7.0.0"
 EXPECTED_DISTRIBUTION = "cortex-record-kb"
-EXPECTED_WHEEL_FILENAME = "cortex_record_kb-6.0.0-py3-none-any.whl"
-EXPECTED_WHEEL_SHA256 = "8c27adca83578646e224217f4a532931e7ffea49c75090bb75933c3421a6338a"
+EXPECTED_WHEEL_FILENAME = "cortex_record_kb-7.0.0-py3-none-any.whl"
+EXPECTED_WHEEL_SHA256 = "1785b0ce0ec1861ac4860345a48eb72109b98788ad3f2f5597e3bf1235440a59"
 EXPECTED_MANIFEST_KEYS = {
     "schema_version", "distribution", "import", "version", "wheel",
     "wheel_sha256", "python", "isolation",
@@ -81,7 +81,7 @@ def _load_manifest(path: Path) -> dict[str, object]:
 
 
 def _verify_archive(path: Path) -> None:
-    metadata_name = "cortex_record_kb-6.0.0.dist-info/METADATA"
+    metadata_name = "cortex_record_kb-7.0.0.dist-info/METADATA"
     try:
         with zipfile.ZipFile(path, "r") as archive:
             names = archive.namelist()

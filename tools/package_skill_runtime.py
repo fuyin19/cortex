@@ -16,11 +16,11 @@ import tomllib
 import zipfile
 
 
-VERSION = "6.0.0"
+VERSION = "7.0.0"
 DISTRIBUTION = "cortex-record-kb"
 IMPORT_NAME = "cortex"
-WHEEL_NAME = "cortex_record_kb-6.0.0-py3-none-any.whl"
-DIST_INFO = "cortex_record_kb-6.0.0.dist-info"
+WHEEL_NAME = "cortex_record_kb-7.0.0-py3-none-any.whl"
+DIST_INFO = "cortex_record_kb-7.0.0.dist-info"
 SKILLS = ("cortex-build", "cortex-manage")
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
@@ -117,9 +117,9 @@ import sys
 import zipfile
 
 
-EXPECTED_VERSION = "6.0.0"
+EXPECTED_VERSION = "7.0.0"
 EXPECTED_DISTRIBUTION = "cortex-record-kb"
-EXPECTED_WHEEL_FILENAME = "cortex_record_kb-6.0.0-py3-none-any.whl"
+EXPECTED_WHEEL_FILENAME = "cortex_record_kb-7.0.0-py3-none-any.whl"
 EXPECTED_WHEEL_SHA256 = "__WHEEL_SHA256__"
 EXPECTED_MANIFEST_KEYS = {
     "schema_version", "distribution", "import", "version", "wheel",
@@ -185,7 +185,7 @@ def _load_manifest(path: Path) -> dict[str, object]:
 
 
 def _verify_archive(path: Path) -> None:
-    metadata_name = "cortex_record_kb-6.0.0.dist-info/METADATA"
+    metadata_name = "cortex_record_kb-7.0.0.dist-info/METADATA"
     try:
         with zipfile.ZipFile(path, "r") as archive:
             names = archive.namelist()

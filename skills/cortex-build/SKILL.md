@@ -1,24 +1,18 @@
 ---
 name: cortex-build
-description: Add a source and optional canonical conversion to an explicitly selected Cortex 6.0 Bundle.
+description: Add a source and optional canonical conversion to an explicitly selected Cortex 7.0 Bundle.
 ---
 
-# Build Cortex 6 records
+# Cortex build
 
-Use this skill's complete local runtime through one absolute Python 3.11 interpreter and this skill's absolute runner path. Require exit 0, exactly one `cortex 6.0.0` stdout line, and empty stderr.
+Use the complete skill-local runtime with `<ABSOLUTE-PYTHON-3.11> -I <ABSOLUTE-SKILL>/scripts/run_cortex.py`. First require `--version` to emit exactly `cortex 7.0.0` on stdout and empty stderr. Do not fall back to a global command, ambient package, installation, sibling skill, network, or update.
 
-```text
-"<ABSOLUTE-PYTHON-3.11>" -I "<ABSOLUTE-CORTEX-BUILD-SKILL-DIR>/scripts/run_cortex.py" --version
-```
+Require explicit `--workspace`, or explicit `--kb-root` plus `--bundle-id`. Inspect Record 1, Tag 2, Layout 4. Require nonnull `partition_tag_group`, `partition_name_strategy: tag`, `unit_name_strategy: tag-title-date`, `duplicate_name_strategy: reject`, and exactly one record tag in the partition group. Never infer or add tags.
 
-The runner verifies its pinned wheel before import and never resolves a PATH command. Do not fall back to a bare `cortex`, `python -m cortex`, `PYTHONPATH`, an ambient package, a sibling skill, pip, network access, installation, caching, or an update/latest check. A skill update must install this entire skill directory, including `scripts/run_cortex.py`, `scripts/runtime-manifest.json`, and `scripts/vendor/`.
-
-Require an explicit `--workspace`, or explicit KB root plus Bundle ID. Inspect the complete Layout Profile. Require a nonnull `unit_name_tag_group`, exactly one Tag 2 value from it, a caller-supplied timezone-aware RFC3339 timestamp, and `tag-title-date`/`reject`. Stop on unknown tags; never invent or auto-add them.
-
-Full input is an exact canonical conversion directory containing one same-stem top-level `.md`/`.json` pair, `src/` with one source equal by basename and SHA-256 to `--source`, and optional safe `assets/`. Markdown-only input is one `.md` source and no conversion. Invoke only:
+Invoke add with unchanged arguments:
 
 ```text
-<metadata-json> | "<ABSOLUTE-PYTHON-3.11>" -I "<ABSOLUTE-CORTEX-BUILD-SKILL-DIR>/scripts/run_cortex.py" --json --workspace <bundle> record add --source <absolute-file> [--conversion <absolute-directory>] --metadata -
+<ABSOLUTE-PYTHON-3.11> -I <ABSOLUTE-SKILL>/scripts/run_cortex.py --json --workspace <bundle> record add --source <file> [--conversion <dir>] --metadata <json>
 ```
 
-Treat `busy/5`, duplicate name, and `bundle_not_operational` as stop conditions. Never write directly into a Bundle.
+Confirm the Result's exact `partition`, `record`, and `path`; do not rename, move, batch, search, repair, migrate, or cut over. Full conversions must have the canonical Markdown/JSON/src shape; source-only input must be Markdown.

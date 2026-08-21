@@ -11,7 +11,7 @@ from pathlib import Path
 from .errors import io_error, validation_error
 from .native import is_reparse_metadata, native_path, require_safe_component
 
-_DOMAIN = b"CORTEX_UNIT_TREE_V1\0"
+_DOMAIN = b"CORTEX_UNIT_TREE_V2\0"
 _U64 = (1 << 64) - 1
 
 
@@ -79,11 +79,15 @@ def _scan(root: Path) -> tuple[ManifestEntry, ...]:
     return tuple(sorted(entries, key=lambda item: _encoded(item.relative)))
 
 
-def _digest(unit_name: str, root: Path, manifest: tuple[ManifestEntry, ...]) -> str:
+def _digest(partition: str, unit_name: str, root: Path, manifest: tuple[ManifestEntry, ...]) -> str:
+    require_safe_component(partition, allow_profiles=False, label=partition)
     require_safe_component(unit_name, allow_profiles=False, label=unit_name)
+    raw_partition = _encoded(partition)
     raw_name = _encoded(unit_name)
     digest = hashlib.sha256()
     digest.update(_DOMAIN)
+    digest.update(_u64(len(raw_partition)))
+    digest.update(raw_partition)
     digest.update(_u64(len(raw_name)))
     digest.update(raw_name)
     for item in manifest:
@@ -102,12 +106,12 @@ def _digest(unit_name: str, root: Path, manifest: tuple[ManifestEntry, ...]) -> 
     return digest.hexdigest()
 
 
-def inventory_unit(root: Path, unit_name: str) -> TreeInventory:
+def inventory_unit(root: Path, partition: str, unit_name: str) -> TreeInventory:
     """Return the second-pass manifest iff two complete passes are identical."""
     first = _scan(root)
-    first_digest = _digest(unit_name, root, first)
+    first_digest = _digest(partition, unit_name, root, first)
     second = _scan(root)
-    second_digest = _digest(unit_name, root, second)
+    second_digest = _digest(partition, unit_name, root, second)
     if first != second or first_digest != second_digest:
         raise validation_error("Unit tree changed during authorization", "tree_changed_during_read", path=unit_name)
     return TreeInventory(second_digest, second)

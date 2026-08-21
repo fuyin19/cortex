@@ -1,4 +1,4 @@
-"""Cortex 6 record-KB operations."""
+"""Cortex 7 record-KB operations."""
 
 from __future__ import annotations
 
@@ -132,18 +132,18 @@ def _complete_metadata(
 
 
 def _naming_tag_for_record(record: dict[str, Any], tags: dict[str, Any], layout: dict[str, Any]) -> tuple[str, set[str]]:
-    group_name = layout["unit_name_tag_group"]
+    group_name = layout["partition_tag_group"]
     if group_name is None:
         raise validation_error("Bundle must be configured before records can be added", "bundle_not_operational")
     groups = tag_groups(tags)
     if group_name not in groups:
-        raise validation_error("unit_name_tag_group does not name an existing tag group", "unknown_unit_name_tag_group", group=group_name)
+        raise validation_error("partition_tag_group does not name an existing tag group", "unknown_partition_tag_group", group=group_name)
     naming_tags = {item["tag"] for item in groups[group_name]}
     selected = [tag for tag in record["tags"] if tag in naming_tags]
     if len(selected) != 1:
         raise validation_error(
-            "Record must contain exactly one tag from the configured naming group",
-            "unit_name_tag_count",
+            "Record must contain exactly one tag from the configured partition group",
+            "partition_tag_count",
             tags=selected,
         )
     return selected[0], naming_tags
@@ -152,6 +152,13 @@ def _naming_tag_for_record(record: dict[str, Any], tags: dict[str, Any], layout:
 def _record_operand(value: str) -> str:
     if "\\" in value or "/" in value or value in {"", ".", ".."}:
         raise validation_error("Record operand must be one exact safe component", "invalid_record_operand", path=value)
+    require_safe_component(value, allow_profiles=False, label=value)
+    return value
+
+
+def _partition_operand(value: str) -> str:
+    if "\\" in value or "/" in value or value in {"", ".", ".."}:
+        raise validation_error("Partition operand must be one exact safe component", "invalid_partition_operand", path=value)
     require_safe_component(value, allow_profiles=False, label=value)
     return value
 
@@ -195,6 +202,8 @@ def _conversion_shape(entries: list[tuple[str, Path, bool]], source: Path) -> No
     other = [name for name in files if name not in allowed and not name.startswith("assets/")]
     if len(top_md) != 1 or len(top_json) != 1 or Path(top_md[0]).stem != Path(top_json[0]).stem or len(src_files) != 1 or other or not roots <= {top_md[0], top_json[0], "src", "assets"}:
         raise validation_error("Conversion must have the exact canonical full bundle shape", "invalid_conversion_shape")
+    if Path(src_files[0]).stem != Path(top_md[0]).stem:
+        raise validation_error("Conversion Markdown/JSON and src file must share one stem", "conversion_source_stem_mismatch")
     converted_source = next(path for relative, path, directory in entries if not directory and relative == src_files[0])
     if Path(src_files[0]).name != source.name or _sha256(converted_source) != _sha256(source):
         raise validation_error("--source must equal conversion src by basename and SHA-256", "conversion_source_mismatch")
@@ -227,14 +236,17 @@ def _require_initialized_lock_target(workspace: Path) -> None:
 
 
 class CortexService:
-    def __init__(self, workspace: Path | str, *, kb_root: Path | str | None = None, bundle_id: str | None = None) -> None:
-        self.workspace = Path(os.path.abspath(workspace))
+    def __init__(self, workspace: Path | str | None, *, kb_root: Path | str | None = None, bundle_id: str | None = None) -> None:
+        self.workspace = Path(os.path.abspath(workspace)) if workspace is not None else None
         self.kb_root = Path(os.path.abspath(kb_root)) if kb_root is not None else None
         self.bundle_id = bundle_id
+        if self.workspace is None and (self.kb_root is None or self.bundle_id is None):
+            raise ValueError("An unresolved service requires both kb_root and bundle_id")
 
     def _lock_path(self) -> Path:
         if self.kb_root is not None:
             return self.kb_root / ROOT_LOCK_FILENAME
+        assert self.workspace is not None
         return workspace_lock_path(self.workspace)
 
     def _refresh_managed_workspace(self) -> None:
@@ -244,15 +256,21 @@ class CortexService:
         registry = require_registry(self.kb_root)
         entry = resolve_bundle(self.kb_root, self.bundle_id, registry=registry)
         selected = self.kb_root / entry["path"]
-        if selected != self.workspace:
+        if self.workspace is None:
+            self.workspace = selected
+        elif selected != self.workspace:
             raise validation_error("Bundle resolution changed before mutation", "bundle_resolution_changed", id=self.bundle_id)
 
     @contextmanager
     def _mutation_report(self) -> Iterator[ValidationReport]:
-        _require_initialized_lock_target(self.workspace)
         lock_path = self._lock_path()
+        if self.kb_root is None:
+            assert self.workspace is not None
+            _require_initialized_lock_target(self.workspace)
         with writer_lock(lock_path) as lock_stream:
             self._refresh_managed_workspace()
+            assert self.workspace is not None
+            _require_initialized_lock_target(self.workspace)
             locked_schema = None
             if lock_path == self.workspace / "profiles" / "record-schema.json":
                 lock_stream.seek(0)
@@ -295,7 +313,7 @@ class CortexService:
                     stream.flush()
         except OSError as exc:
             raise io_error("Workspace profiles could not be initialized", "init_failed", path=str(root), os_error=str(exc)) from exc
-        return Outcome(data={"version": VERSION, "unit_name_tag_group": None})
+        return Outcome(data={"version": VERSION, "partition_tag_group": None})
 
     def status(self) -> Outcome:
         report = validate_workspace(self.workspace)
@@ -343,7 +361,7 @@ class CortexService:
         _safe_conversion(conversion_operand)
         with self._mutation_report() as report:
             assert report.tags is not None and report.layout is not None
-            if report.layout["unit_name_tag_group"] is None:
+            if report.layout["partition_tag_group"] is None:
                 raise validation_error("Bundle must be configured before records can be added", "bundle_not_operational")
             metadata = _read_operand_again(metadata_operand, metadata)
             registered = registered_tags(report.tags)
@@ -356,17 +374,32 @@ class CortexService:
                 raise validation_error("Markdown-only add requires a .md source", "invalid_source_only")
             if conversion_entries is not None:
                 _conversion_shape(conversion_entries, source)
+            partition = naming_tag
+            require_safe_component(partition, allow_profiles=False, label=partition)
+            if len(partition.encode("utf-8")) > layout["max_component_length"]:
+                raise validation_error("Partition exceeds max_component_length", "partition_name_too_long", path=partition)
             folder = tag_title_date_name(naming_tag, record["title"], record["timestamp"], layout["max_component_length"])
-            existing = {entry.name.casefold() for entry in checked_scandir(self.workspace) if entry.name != "profiles"}
+            partition_path = self.workspace / partition
+            partition_exists = exists(partition_path)
+            if partition_exists:
+                require_real_directory(partition_path, code="invalid_partition")
+                existing = {entry.name.casefold() for entry in checked_scandir(partition_path)}
+            else:
+                root_names = {entry.name.casefold() for entry in checked_scandir(self.workspace) if entry.name != "profiles"}
+                if partition.casefold() in root_names:
+                    raise validation_error("Partition collides under case folding", "partition_casefold_collision", path=partition)
+                existing = set()
             if folder.casefold() in existing:
                 raise validation_error("Record folder already exists", "duplicate_record_name", path=folder)
-            temporary = self.workspace / f".cortex-add-{uuid.uuid4().hex}"
-            destination = self.workspace / folder
-            staged_unit = temporary
+            temporary = (partition_path if partition_exists else self.workspace) / f".cortex-add-{uuid.uuid4().hex}"
+            destination = partition_path / folder
+            staged_unit = temporary if partition_exists else temporary / folder
             temporary_created = False
             try:
                 temporary.mkdir(exist_ok=False)
                 temporary_created = True
+                if not partition_exists:
+                    staged_unit.mkdir(exist_ok=False)
                 with (staged_unit / "record.json").open("xb") as stream:
                     stream.write(json_bytes(record))
                     stream.flush()
@@ -384,6 +417,8 @@ class CortexService:
                     folder,
                     registered=registered,
                     maximum=layout["max_component_length"],
+                    partition=partition,
+                    label_root=partition,
                     tags=report.tags,
                     layout=layout,
                     check_folder=False,
@@ -392,7 +427,7 @@ class CortexService:
                     first = problems[0]
                     raise validation_error(first["message"], first["code"], path=first.get("path"), issues=problems)
                 try:
-                    rename_no_replace(temporary, destination)
+                    rename_no_replace(temporary, destination if partition_exists else partition_path)
                 except FileExistsError:
                     raise validation_error("Record folder already exists", "duplicate_record_name", path=folder)
             except CortexError:
@@ -403,9 +438,10 @@ class CortexService:
                 if temporary_created:
                     _cleanup_staged_directory(temporary)
                 raise io_error("Record could not be staged", "record_stage_failed", path=str(destination), os_error=str(exc)) from exc
-            return Outcome(data={"record": folder, "path": folder})
+            return Outcome(data={"partition": partition, "record": folder, "path": f"{partition}/{folder}"})
 
-    def record_edit(self, folder: str, metadata_operand: str) -> Outcome:
+    def record_edit(self, partition_value: str, folder: str, metadata_operand: str) -> Outcome:
+        partition = _partition_operand(partition_value)
         unit = _record_operand(folder)
         metadata, _ = read_json_operand(metadata_operand)
         _precheck_metadata_shape(metadata)
@@ -413,7 +449,7 @@ class CortexService:
             assert report.tags is not None and report.layout is not None
             metadata = _read_operand_again(metadata_operand, metadata)
             _precheck_metadata_shape(metadata)
-            unit_path = self.workspace / unit
+            unit_path = self.workspace / partition / unit
             if not exists(unit_path):
                 raise validation_error("Record folder does not exist", "record_not_found", path=folder)
             record_path = unit_path / "record.json"
@@ -422,24 +458,31 @@ class CortexService:
             current = read_json_operand(str(record_path))[0]
             old_tag, _ = _naming_tag_for_record(current, report.tags, report.layout)
             new_tag, _ = _naming_tag_for_record(record, report.tags, report.layout)
+            if old_tag != partition:
+                raise validation_error("Record does not belong to the requested partition", "partition_record_mismatch", path=f"{partition}/{unit}")
             if record["title"] != current["title"] or record["timestamp"] != current["timestamp"] or new_tag != old_tag:
-                raise validation_error("Title, timestamp, and selected naming tag are immutable", "record_identity_change_forbidden", path=folder)
+                raise validation_error("Title, timestamp, and selected partition tag are immutable", "record_identity_change_forbidden", path=folder)
             _atomic_replace_json(record_path, record, "edit")
-            return Outcome(data={"record": folder, "path": folder})
+            return Outcome(data={"partition": partition, "record": folder, "path": f"{partition}/{folder}"})
 
-    def record_show(self, folder: str) -> Outcome:
+    def record_show(self, partition_value: str, folder: str) -> Outcome:
+        partition = _partition_operand(partition_value)
         unit = _record_operand(folder)
         with self._mutation_report() as report:
-            unit_path = self.workspace / unit
+            unit_path = self.workspace / partition / unit
             if not exists(unit_path):
                 raise validation_error("Record folder does not exist", "record_not_found", path=folder)
-            inventory = inventory_unit(unit_path, unit)
+            inventory = inventory_unit(unit_path, partition, unit)
             record_bytes = (unit_path / "record.json").read_bytes()
-            metadata = loads_object(record_bytes, label=f"{unit}/record.json")
-            confirmation = inventory_unit(unit_path, unit)
+            metadata = loads_object(record_bytes, label=f"{partition}/{unit}/record.json")
+            selected, _ = _naming_tag_for_record(metadata, report.tags, report.layout)
+            if selected != partition:
+                raise validation_error("Record does not belong to the requested partition", "partition_record_mismatch", path=f"{partition}/{unit}")
+            confirmation = inventory_unit(unit_path, partition, unit)
             if confirmation.sha256 != inventory.sha256 or confirmation.manifest != inventory.manifest:
                 raise validation_error("Unit changed while record metadata was read", "tree_changed_during_read", path=unit)
             return Outcome(data={
+                "partition": partition,
                 "record": unit,
                 "tree_sha256": inventory.sha256,
                 "record_json_sha256": hashlib.sha256(record_bytes).hexdigest(),
@@ -447,15 +490,17 @@ class CortexService:
                 "manifest": [{"path": item.relative, "type": item.kind, **({"size": item.size} if item.size is not None else {})} for item in inventory.manifest],
             })
 
-    def record_delete(self, folder: str, expected: str) -> Outcome:
+    def record_delete(self, partition_value: str, folder: str, expected: str) -> Outcome:
+        partition = _partition_operand(partition_value)
         unit = _record_operand(folder)
         if len(expected) != 64 or expected.lower() != expected or any(ch not in "0123456789abcdef" for ch in expected):
             raise validation_error("Expected tree digest must be lowercase 64-character SHA-256", "invalid_expected_tree_sha256")
         with self._mutation_report() as report:
-            unit_path = self.workspace / unit
+            partition_path = self.workspace / partition
+            unit_path = partition_path / unit
             if not exists(unit_path):
                 raise validation_error("Record folder does not exist", "record_not_found", path=unit)
-            inventory = inventory_unit(unit_path, unit)
+            inventory = inventory_unit(unit_path, partition, unit)
             if inventory.sha256 != expected:
                 raise validation_error("Unit tree digest does not match", "tree_digest_mismatch", expected=expected, actual=inventory.sha256)
             ordered = sorted(inventory.manifest, key=lambda item: (item.relative.count("/"), item.relative.encode("utf-8")), reverse=True)
@@ -473,18 +518,20 @@ class CortexService:
                         os.rmdir(native_path(path))
                 first_failed = "."
                 os.rmdir(native_path(unit_path))
-            except OSError as exc:
+                if not checked_scandir(partition_path):
+                    os.rmdir(native_path(partition_path))
+            except (OSError, CortexError) as exc:
                 try:
                     remaining = _residue_count(unit_path) if exists(unit_path) else 0
                     issues = [{"code": "delete_incomplete", "message": "Record deletion stopped at first failure", "path": first_failed or ".", "details": {"os_error": str(exc)}}]
-                except OSError as scan_exc:
+                except (OSError, CortexError) as scan_exc:
                     remaining = None
                     issues = [
                         {"code": "delete_incomplete", "message": "Record deletion stopped at first failure", "path": first_failed or ".", "details": {"os_error": str(exc)}},
                         {"code": "residue_unreadable", "message": "Deletion residue could not be counted", "details": {"os_error": str(scan_exc)}},
                     ]
-                return Outcome(status=Status.IO_ERROR, data={"record": unit, "partial": True, "first_failed_relative_path": first_failed or ".", "remaining_entry_count": remaining}, issues=issues)
-            return Outcome(data={"record": unit, "deleted": True, "tree_sha256": expected})
+                return Outcome(status=Status.IO_ERROR, data={"partition": partition, "record": unit, "partial": True, "first_failed_relative_path": first_failed or ".", "remaining_entry_count": remaining}, issues=issues)
+            return Outcome(data={"partition": partition, "record": unit, "deleted": True, "tree_sha256": expected})
 
 
 class RegistryService:

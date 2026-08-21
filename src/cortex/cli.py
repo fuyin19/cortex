@@ -1,4 +1,4 @@
-"""Closed Cortex 6 command-line interface."""
+"""Closed Cortex 7 command-line interface."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ class ContractParser(argparse.ArgumentParser):
 def _parser() -> ContractParser:
     parser = ContractParser(prog="cortex")
     parser.add_argument("--json", action="store_true", help="emit one machine-readable Result")
-    parser.add_argument("--workspace", help="one Cortex 6 Bundle root")
+    parser.add_argument("--workspace", help="one Cortex 7 Bundle root")
     parser.add_argument("--kb-root", help="one registered Cortex KB root")
     parser.add_argument("--bundle-id", help="explicit registered Bundle id")
     parser.add_argument("--version", action="version", version=f"cortex {VERSION}")
@@ -56,11 +56,14 @@ def _parser() -> ContractParser:
     add.add_argument("--conversion")
     add.add_argument("--metadata", required=True)
     edit = record_commands.add_parser("edit")
+    edit.add_argument("--partition", required=True)
     edit.add_argument("--record", required=True)
     edit.add_argument("--metadata", required=True)
     show_record = record_commands.add_parser("show")
+    show_record.add_argument("--partition", required=True)
     show_record.add_argument("--record", required=True)
     delete = record_commands.add_parser("delete")
+    delete.add_argument("--partition", required=True)
     delete.add_argument("--record", required=True)
     delete.add_argument("--expected-tree-sha256", required=True)
     return parser
@@ -108,9 +111,12 @@ def _dispatch(route: str, args: argparse.Namespace) -> Outcome:
     else:
         if args.kb_root is None or args.bundle_id is None:
             raise CortexError("Managed bundle routes require --kb-root and --bundle-id", status=Status.USAGE_ERROR, code="bundle_selection_required")
-        registry_service = RegistryService(Path(args.kb_root))
-        resolved = registry_service.resolve(args.bundle_id).data
-        service = CortexService(Path(resolved["workspace"]), kb_root=Path(args.kb_root), bundle_id=args.bundle_id)
+        if route in {"manage.config.set", "record.add", "record.edit", "record.show", "record.delete"}:
+            service = CortexService(None, kb_root=Path(args.kb_root), bundle_id=args.bundle_id)
+        else:
+            registry_service = RegistryService(Path(args.kb_root))
+            resolved = registry_service.resolve(args.bundle_id).data
+            service = CortexService(Path(resolved["workspace"]), kb_root=Path(args.kb_root), bundle_id=args.bundle_id)
     if route == "manage.status":
         return service.status()
     if route == "manage.validate":
@@ -122,11 +128,11 @@ def _dispatch(route: str, args: argparse.Namespace) -> Outcome:
     if route == "record.add":
         return service.record_add(args.source, args.conversion, args.metadata)
     if route == "record.edit":
-        return service.record_edit(args.record, args.metadata)
+        return service.record_edit(args.partition, args.record, args.metadata)
     if route == "record.show":
-        return service.record_show(args.record)
+        return service.record_show(args.partition, args.record)
     if route == "record.delete":
-        return service.record_delete(args.record, args.expected_tree_sha256)
+        return service.record_delete(args.partition, args.record, args.expected_tree_sha256)
     raise CortexError("Route is not public", status=Status.USAGE_ERROR, code="unknown_route")
 
 

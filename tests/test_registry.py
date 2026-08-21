@@ -161,7 +161,7 @@ def test_sc_029_reads_are_lock_free_and_registry_replacement_is_atomic(tmp_path:
 
 def test_sc_030_static_contract_has_no_product_migration_or_extra_state(tmp_path: Path) -> None:
     root = Path(__file__).parents[1]
-    surface = json.loads((root / "fixtures" / "capabilities" / "cortex6-surface.json").read_text("utf-8"))
+    surface = json.loads((root / "fixtures" / "capabilities" / "cortex7-surface.json").read_text("utf-8"))
     assert "record.delete" in surface["routes"]
     assert not any(word in " ".join(surface["routes"]) for word in ("migrate", "rename", "move", "batch", "search"))
     assert not (root / "skills" / "record-build" / "SKILL.md").exists()

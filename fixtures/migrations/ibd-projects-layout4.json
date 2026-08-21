@@ -1,0 +1,6 @@
+{
+  "source_layout": 3,
+  "target_layout": {"version": 4, "partition_tag_group": "project", "partition_name_strategy": "tag", "unit_name_strategy": "tag-title-date", "max_component_length": 200, "duplicate_name_strategy": "reject"},
+  "expected": {"partitions": 30, "total": 395, "full": 25, "markdown_only": 370},
+  "preserve": ["unit names", "record.json bytes", "payload bytes", "payload relative paths"]
+}

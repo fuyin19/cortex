@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import unicodedata
 
 from .errors import validation_error
@@ -13,9 +14,16 @@ REQUIRED_UNIDATA_VERSION = "14.0.0"
 
 
 def require_naming_runtime() -> None:
+    if sys.version_info[:2] != (3, 11):
+        raise validation_error(
+            "Layout 4 naming requires Python 3.11",
+            "unsupported_python_version",
+            required="3.11",
+            actual=f"{sys.version_info[0]}.{sys.version_info[1]}",
+        )
     if unicodedata.unidata_version != REQUIRED_UNIDATA_VERSION:
         raise validation_error(
-            "Layout 3 naming requires Unicode database 14.0.0",
+            "Layout 4 naming requires Unicode database 14.0.0",
             "unsupported_unicode_database",
             required=REQUIRED_UNIDATA_VERSION,
             actual=unicodedata.unidata_version,
@@ -81,7 +89,7 @@ def semantic_title(title: str) -> str:
 
 
 def tag_title_date_name(tag: str, title: str, timestamp: str, maximum: int) -> str:
-    """Build the normative Layout 3 unit name without altering the selected tag."""
+    """Build the normative Layout 4 unit name without altering the selected tag."""
 
     date_stamp = timestamp[:10].replace("-", "")
     fixed = len(tag.encode("utf-8")) + 2 + len(date_stamp.encode("ascii"))

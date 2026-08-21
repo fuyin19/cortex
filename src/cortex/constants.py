@@ -1,8 +1,8 @@
-"""The deliberately small Cortex 6 public contract."""
+"""The deliberately small Cortex 7 public contract."""
 
 from __future__ import annotations
 
-VERSION = "6.0.0"
+VERSION = "7.0.0"
 DIST_NAME = "cortex-record-kb"
 
 PUBLIC_ROUTES = (
@@ -37,8 +37,9 @@ RECORD_SCHEMA = {
 
 DEFAULT_TAGS = {"version": 2, "groups": []}
 DEFAULT_LAYOUT = {
-    "version": 3,
-    "unit_name_tag_group": None,
+    "version": 4,
+    "partition_tag_group": None,
+    "partition_name_strategy": "tag",
     "unit_name_strategy": "tag-title-date",
     "max_component_length": 96,
     "duplicate_name_strategy": "reject",

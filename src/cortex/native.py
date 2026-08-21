@@ -94,8 +94,8 @@ def is_windows_device_name(component: str) -> bool:
 def component_problem(component: str, *, allow_profiles: bool = True) -> tuple[str, str] | None:
     if not component or component in {".", ".."}:
         return "unsafe_component", "Path component is empty or relative"
-    if component.casefold().startswith(".cortex-"):
-        return "reserved_staging_name", "Cortex staging names are reserved"
+    if component.casefold() == ".cortex" or component.casefold().startswith(".cortex-"):
+        return "reserved_cortex_name", "Reserved Cortex names are forbidden"
     if component.endswith((".", " ")):
         return "unsafe_component", "Trailing dots and spaces are forbidden"
     if any(character in _FORBIDDEN or unicontrol(character) for character in component):

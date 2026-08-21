@@ -1,4 +1,4 @@
-"""Side-effect-free structural validation for a Cortex 6 record Bundle."""
+"""Side-effect-free structural validation for a Cortex 7 record Bundle."""
 
 from __future__ import annotations
 
@@ -108,23 +108,23 @@ def _opaque_assets(root: Path, label: str, issues: list[dict[str, Any]]) -> None
 
 
 def _selected_tag(record: dict[str, Any], tags: dict[str, Any], layout: dict[str, Any], label: str, issues: list[dict[str, Any]]) -> str | None:
-    group = layout["unit_name_tag_group"]
+    group = layout["partition_tag_group"]
     if group is None:
-        issues.append(issue("bundle_not_operational", "A nonempty unit_name_tag_group is required for records", path="profiles/layout.json#/unit_name_tag_group"))
+        issues.append(issue("bundle_not_operational", "A nonempty partition_tag_group is required for records", path="profiles/layout.json#/partition_tag_group"))
         return None
     groups = tag_groups(tags)
     if group not in groups:
-        issues.append(issue("unknown_unit_name_tag_group", "unit_name_tag_group must name an existing Tag 2 group", path="profiles/layout.json#/unit_name_tag_group", group=group))
+        issues.append(issue("unknown_partition_tag_group", "partition_tag_group must name an existing Tag 2 group", path="profiles/layout.json#/partition_tag_group", group=group))
         return None
     choices = {item["tag"] for item in groups[group]}
     selected = [tag for tag in record.get("tags", []) if tag in choices]
     if len(selected) != 1:
-        issues.append(issue("unit_name_tag_count", "Record must select exactly one naming tag", path=f"{label}/record.json#/tags", tags=selected))
+        issues.append(issue("partition_tag_count", "Record must select exactly one partition tag", path=f"{label}/record.json#/tags", tags=selected))
         return None
     return selected[0]
 
 
-def validate_record_directory(record_dir: Path, folder: str, *, registered: set[str], maximum: int, label_root: str = "", tags: dict[str, Any] | None = None, layout: dict[str, Any] | None = None, check_folder: bool = True, **_legacy: Any) -> list[dict[str, Any]]:
+def validate_record_directory(record_dir: Path, folder: str, *, registered: set[str], maximum: int, partition: str | None = None, label_root: str = "", tags: dict[str, Any] | None = None, layout: dict[str, Any] | None = None, check_folder: bool = True, **_legacy: Any) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     label = f"{label_root}/{folder}".strip("/")
     if check_folder:
@@ -140,7 +140,7 @@ def validate_record_directory(record_dir: Path, folder: str, *, registered: set[
     names = {e.name for e in entries}
     for forbidden in ("original", "representations"):
         if forbidden in names:
-            issues.append(issue("legacy_record_wrapper", "Legacy record wrappers are invalid in Layout 3", path=f"{label}/{forbidden}"))
+            issues.append(issue("legacy_record_wrapper", "Legacy record wrappers are invalid in Layout 4", path=f"{label}/{forbidden}"))
     if "record.json" not in names:
         issues.append(issue("missing_record_entry", "record.json is required", path=f"{label}/record.json"))
     record, payload = (None, None)
@@ -158,10 +158,12 @@ def validate_record_directory(record_dir: Path, folder: str, *, registered: set[
         if tags is not None and layout is not None:
             selected = _selected_tag(record, tags, layout, label, issues)
             if selected is not None:
+                if partition is not None and selected != partition:
+                    issues.append(issue("partition_tag_mismatch", "Record partition tag must exactly equal its partition", path=label, expected=partition, actual=selected))
                 try:
                     expected = tag_title_date_name(selected, record["title"], record["timestamp"], maximum)
                     if folder != expected:
-                        issues.append(issue("record_name_mismatch", "Record folder does not match Layout 3 naming", path=label, expected=expected, actual=folder))
+                        issues.append(issue("record_name_mismatch", "Record folder does not match Layout 4 naming", path=label, expected=expected, actual=folder))
                 except CortexError as exc:
                     issues.append(exc.as_issue())
 
@@ -173,7 +175,7 @@ def validate_record_directory(record_dir: Path, folder: str, *, registered: set[
     full = len(md) == 1 and len(js) == 1 and Path(md[0]).stem == Path(js[0]).stem and dirs in ({"src"}, {"src", "assets"}) and not other
     markdown_only = len(md) == 1 and not js and not dirs and not other
     if not (full or markdown_only):
-        issues.append(issue("invalid_record_shape", "Unit must be exact full-conversion or Markdown-only Layout 3 shape", path=label))
+        issues.append(issue("invalid_record_shape", "Unit must be exact full-conversion or Markdown-only Layout 4 shape", path=label))
     for entry in entries:
         if entry.name == "record.json":
             continue
@@ -199,6 +201,8 @@ def validate_record_directory(record_dir: Path, folder: str, *, registered: set[
             for e in src_entries:
                 _component(e.name, f"{label}/src/{e.name}", issues)
                 _is_file(Path(e.path), f"{label}/src/{e.name}", issues)
+            if len(src_entries) == 1 and md and Path(src_entries[0].name).stem != Path(md[0]).stem:
+                issues.append(issue("conversion_source_stem_mismatch", "Conversion Markdown/JSON and src file must share one stem", path=f"{label}/src/{src_entries[0].name}"))
         if "assets" in dirs and _is_dir(record_dir / "assets", f"{label}/assets", issues):
             _opaque_assets(record_dir / "assets", f"{label}/assets", issues)
     return issues
@@ -244,7 +248,7 @@ def validate_workspace(workspace: Path, *, locked_record_schema: bytes | None = 
     count = 0
     if tags_value is None or layout_value is None or validate_tags_profile(tags_value) or validate_layout_profile(layout_value):
         return ValidationReport(issues, count, tags_value, layout_value)
-    group = layout_value["unit_name_tag_group"]
+    group = layout_value["partition_tag_group"]
     groups = tag_groups(tags_value)
     if group is not None:
         try:
@@ -253,7 +257,7 @@ def validate_workspace(workspace: Path, *, locked_record_schema: bytes | None = 
             issues.append(exc.as_issue())
             return ValidationReport(issues, count, tags_value, layout_value)
     if group is not None and group not in groups:
-        issues.append(issue("unknown_unit_name_tag_group", "unit_name_tag_group must name an existing Tag 2 group", path="profiles/layout.json#/unit_name_tag_group", group=group))
+        issues.append(issue("unknown_partition_tag_group", "partition_tag_group must name an existing Tag 2 group", path="profiles/layout.json#/partition_tag_group", group=group))
     if group is not None and group in groups:
         folded_tags: dict[str, str] = {}
         maximum = layout_value["max_component_length"]
@@ -273,16 +277,33 @@ def validate_workspace(workspace: Path, *, locked_record_schema: bytes | None = 
             folded_tags[key] = tag
     registered = registered_tags(tags_value)
     collisions: dict[str, str] = {}
+    partition_tags = {item["tag"] for item in groups[group]} if group is not None and group in groups else set()
     for entry in roots:
-        if entry.name == "profiles": continue
-        count += 1
+        if entry.name == "profiles":
+            continue
         key = entry.name.casefold()
         if key in collisions and collisions[key] != entry.name:
-            issues.append(issue("record_casefold_collision", "Record unit names collide under case folding", path=".", names=[collisions[key], entry.name]))
+            issues.append(issue("partition_casefold_collision", "Partition names collide under case folding", path=".", names=[collisions[key], entry.name]))
         collisions[key] = entry.name
-        issues.extend(validate_record_directory(Path(entry.path), entry.name, registered=registered, maximum=layout_value["max_component_length"], tags=tags_value, layout=layout_value))
+        _component(entry.name, entry.name, issues)
+        partition_path = Path(entry.path)
+        if not _is_dir(partition_path, entry.name, issues):
+            continue
+        if partition_tags and entry.name not in partition_tags:
+            issues.append(issue("unknown_partition", "Partition must be an exact configured tag value", path=entry.name))
+        units = _scan(partition_path, entry.name, issues)
+        if not units:
+            issues.append(issue("empty_partition", "Layout 4 partitions must be nonempty", path=entry.name))
+        unit_collisions: dict[str, str] = {}
+        for unit in units:
+            count += 1
+            unit_key = unit.name.casefold()
+            if unit_key in unit_collisions and unit_collisions[unit_key] != unit.name:
+                issues.append(issue("record_casefold_collision", "Record unit names collide under case folding", path=entry.name, names=[unit_collisions[unit_key], unit.name]))
+            unit_collisions[unit_key] = unit.name
+            issues.extend(validate_record_directory(Path(unit.path), unit.name, partition=entry.name, label_root=entry.name, registered=registered, maximum=layout_value["max_component_length"], tags=tags_value, layout=layout_value))
     if count and group is None:
-        issues.append(issue("bundle_not_operational", "A nonempty naming group is required when records exist", path="profiles/layout.json#/unit_name_tag_group"))
+        issues.append(issue("bundle_not_operational", "A nonempty partition group is required when records exist", path="profiles/layout.json#/partition_tag_group"))
     return ValidationReport(issues, count, tags_value, layout_value)
 
 

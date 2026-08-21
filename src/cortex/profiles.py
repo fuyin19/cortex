@@ -1,4 +1,4 @@
-"""Hard-coded Cortex 6 profile and record validators."""
+"""Hard-coded Cortex 7 profile and record validators."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def _exact_keys(value: dict[str, Any], expected: Iterable[str], *, label: str) -
 
 def validate_record_schema(value: dict[str, Any], *, label: str = "profiles/record-schema.json") -> list[dict[str, Any]]:
     if value != RECORD_SCHEMA:
-        return [issue("invalid_record_schema", "record-schema.json must equal the fixed Cortex 6 profile", path=label)]
+        return [issue("invalid_record_schema", "record-schema.json must equal the fixed Cortex 7 profile", path=label)]
     return []
 
 
@@ -92,18 +92,21 @@ def validate_layout_profile(value: dict[str, Any], *, label: str = "profiles/lay
         value,
         (
             "version",
-            "unit_name_tag_group",
+            "partition_tag_group",
+            "partition_name_strategy",
             "unit_name_strategy",
             "max_component_length",
             "duplicate_name_strategy",
         ),
         label=label,
     )
-    if type(value.get("version")) is not int or value.get("version") != 3:
-        issues.append(issue("invalid_profile_version", "Layout profile version must be integer 3", path=label))
-    group = value.get("unit_name_tag_group")
+    if type(value.get("version")) is not int or value.get("version") != 4:
+        issues.append(issue("invalid_profile_version", "Layout profile version must be integer 4", path=label))
+    group = value.get("partition_tag_group")
     if group is not None and (not _strict_text(group) or not group):
-        issues.append(issue("invalid_unit_name_tag_group", "unit_name_tag_group must be null or a nonempty string", path=label))
+        issues.append(issue("invalid_partition_tag_group", "partition_tag_group must be null or a nonempty string", path=label))
+    if value.get("partition_name_strategy") != "tag":
+        issues.append(issue("invalid_partition_name_strategy", "partition_name_strategy must be tag", path=label))
     if value.get("unit_name_strategy") != "tag-title-date":
         issues.append(issue("invalid_unit_name_strategy", "unit_name_strategy must be tag-title-date", path=label))
     maximum = value.get("max_component_length")
