@@ -7,9 +7,14 @@ Layout 4 uses `partition_tag_group`, exact `partition_name_strategy: tag`, `unit
 Record edit/show/delete require separate exact operands:
 
 ```text
-<ABSOLUTE-PYTHON-3.11> -I <SKILL>/scripts/run_cortex.py --json --workspace <bundle> record show --partition <tag> --record <unit>
-<ABSOLUTE-PYTHON-3.11> -I <SKILL>/scripts/run_cortex.py --json --workspace <bundle> record delete --partition <tag> --record <unit> --expected-tree-sha256 <lowercase64>
+export CORTEX_PYTHON=/absolute/path/to/python3.11
+"$CORTEX_PYTHON" -I <SKILL>/scripts/run_cortex.py --json --workspace <bundle> record show --partition <tag> --record <unit>
+"$CORTEX_PYTHON" -I <SKILL>/scripts/run_cortex.py --json --workspace <bundle> record delete --partition <tag> --record <unit> --expected-tree-sha256 <lowercase64>
 ```
+
+`CORTEX_PYTHON` is mandatory and must name the same ordinary, non-reparse Python 3.11/UCD 14 executable that runs the skill-local launcher. Windows may invoke the byte-identical `scripts\run_cortex.cmd` convenience launcher after setting the same absolute variable. There is no PATH, install, network, or alternate-runtime fallback. Human stdout/stderr is UTF-8; `--json` retains the existing compact ASCII-escaped Result encoding.
+
+`cortex-build` alone also carries `scripts/batch_record_add.py`, a sequential wrapper around the same verified `record add` route. It accepts exact v1 jobs from `--job <path|->` (stdin is preferred), validates every item before the first runner call, continues after valid non-ok Results, creates no persistent job state, and is not a core/public route.
 
 Show/delete authorization uses `CORTEX_UNIT_TREE_V2`, which binds partition then unit before the no-follow manifest. Deleting the last unit removes its partition. Registered mutations and authorization share the stable root lock; standalone operations use the Record Profile byte lock.
 

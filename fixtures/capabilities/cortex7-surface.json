@@ -11,7 +11,8 @@
   "tree_digest": "CORTEX_UNIT_TREE_V2",
   "delete_precondition": "expected-tree-sha256",
   "public_migration_route": false,
-  "agent_entrypoint": "absolute-python-3.11 -I skill-local-runner",
+  "agent_entrypoint": "CORTEX_PYTHON absolute-python-3.11-ucd14 -I skill-local-runner",
   "global_command": false,
-  "skill_runtime": {"artifact": "cortex_record_kb-7.0.0-py3-none-any.whl", "offline": true, "independently_complete": true, "payloads_byte_identical": true}
+  "skill_runtime": {"artifact": "cortex_record_kb-7.0.0-py3-none-any.whl", "offline": true, "independently_complete": true, "payloads_byte_identical": true, "required_environment": "CORTEX_PYTHON", "human_stream_encoding": "utf-8", "json_ascii_escaping": true, "windows_launcher": "run_cortex.cmd"},
+  "batch_helper": {"skill": "cortex-build", "script": "batch_record_add.py", "schema_version": 1, "command": "record.add.batch", "core_route": false, "sequential": true, "rollback": false}
 }

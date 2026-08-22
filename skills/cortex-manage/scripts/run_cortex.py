@@ -10,13 +10,14 @@ import os
 from pathlib import Path
 import stat
 import sys
+import unicodedata
 import zipfile
 
 
 EXPECTED_VERSION = "7.0.0"
 EXPECTED_DISTRIBUTION = "cortex-record-kb"
 EXPECTED_WHEEL_FILENAME = "cortex_record_kb-7.0.0-py3-none-any.whl"
-EXPECTED_WHEEL_SHA256 = "1785b0ce0ec1861ac4860345a48eb72109b98788ad3f2f5597e3bf1235440a59"
+EXPECTED_WHEEL_SHA256 = "3bb0be927ae5fa923a80bd4347bd05801e7495ac35134695aa7621cbec224b09"
 EXPECTED_MANIFEST_KEYS = {
     "schema_version", "distribution", "import", "version", "wheel",
     "wheel_sha256", "python", "isolation",
@@ -115,8 +116,20 @@ def _module_is_from_wheel(module: object, wheel: Path) -> bool:
 
 
 def _run() -> int:
+    configured_raw = os.environ.get("CORTEX_PYTHON")
+    if configured_raw is None or configured_raw == "":
+        raise BootstrapError("cortex_python_required")
+    configured = _check_chain(Path(configured_raw), final_file=True)
+    try:
+        same_interpreter = os.path.samefile(configured, sys.executable)
+    except OSError as exc:
+        raise BootstrapError("cortex_python_unreadable") from exc
+    if not same_interpreter:
+        raise BootstrapError("cortex_python_mismatch")
     if sys.version_info[:2] != (3, 11):
         raise BootstrapError("python_3_11_required")
+    if unicodedata.unidata_version != "14.0.0":
+        raise BootstrapError("unicode_14_required")
     if not sys.flags.isolated:
         raise BootstrapError("isolated_mode_required")
     runner = _check_chain(Path(os.path.abspath(__file__)), final_file=True)

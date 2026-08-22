@@ -183,11 +183,21 @@ def _safe_write(stream: Any, value: str) -> None:
     try:
         stream.write(value)
     except UnicodeEncodeError:
-        encoding = getattr(stream, "encoding", None) or "utf-8"
-        stream.write(value.encode(encoding, errors="backslashreplace").decode(encoding))
+        buffer = getattr(stream, "buffer", None)
+        if buffer is None:
+            raise
+        buffer.write(value.encode("utf-8"))
+
+
+def _configure_utf8(stream: Any) -> None:
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(encoding="utf-8", errors="strict")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    _configure_utf8(sys.stdout)
+    _configure_utf8(sys.stderr)
     raw = list(sys.argv[1:] if argv is None else argv)
     json_mode = "--json" in raw
     if json_mode:

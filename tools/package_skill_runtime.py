@@ -114,6 +114,7 @@ import os
 from pathlib import Path
 import stat
 import sys
+import unicodedata
 import zipfile
 
 
@@ -219,8 +220,20 @@ def _module_is_from_wheel(module: object, wheel: Path) -> bool:
 
 
 def _run() -> int:
+    configured_raw = os.environ.get("CORTEX_PYTHON")
+    if configured_raw is None or configured_raw == "":
+        raise BootstrapError("cortex_python_required")
+    configured = _check_chain(Path(configured_raw), final_file=True)
+    try:
+        same_interpreter = os.path.samefile(configured, sys.executable)
+    except OSError as exc:
+        raise BootstrapError("cortex_python_unreadable") from exc
+    if not same_interpreter:
+        raise BootstrapError("cortex_python_mismatch")
     if sys.version_info[:2] != (3, 11):
         raise BootstrapError("python_3_11_required")
+    if unicodedata.unidata_version != "14.0.0":
+        raise BootstrapError("unicode_14_required")
     if not sys.flags.isolated:
         raise BootstrapError("isolated_mode_required")
     runner = _check_chain(Path(os.path.abspath(__file__)), final_file=True)
@@ -263,6 +276,222 @@ if __name__ == "__main__":
     return template.replace("__WHEEL_SHA256__", digest).encode("utf-8")
 
 
+def _windows_launcher_bytes() -> bytes:
+    return (
+        "@echo off\r\n"
+        "if not defined CORTEX_PYTHON (\r\n"
+        "  >&2 echo cortex skill runtime error: cortex_python_required\r\n"
+        "  exit /b 70\r\n"
+        ")\r\n"
+        '"%CORTEX_PYTHON%" -I "%~dp0run_cortex.py" %*\r\n'
+        "exit /b %ERRORLEVEL%\r\n"
+    ).encode("ascii")
+
+
+def _batch_helper_bytes() -> bytes:
+    return r'''#!/usr/bin/env python3
+"""Build-skill-only sequential wrapper for Cortex record add."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+from typing import Any
+
+
+SCHEMA_VERSION = 1
+RESULT_KEYS = {"status", "exit_code", "command", "data", "issues"}
+STATUS_EXIT_CODES = {
+    "ok": 0,
+    "usage_error": 2,
+    "validation_error": 3,
+    "busy": 5,
+    "io_error": 6,
+}
+
+
+class BatchUsage(Exception):
+    pass
+
+
+class ContractParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise BatchUsage("invalid_arguments")
+
+
+def _parser() -> ContractParser:
+    parser = ContractParser(prog="cortex-record-add-batch")
+    selectors = parser.add_mutually_exclusive_group(required=True)
+    selectors.add_argument("--workspace")
+    selectors.add_argument("--kb-root")
+    parser.add_argument("--bundle-id")
+    parser.add_argument("--job", required=True)
+    return parser
+
+
+def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise BatchUsage("duplicate_json_key")
+        result[key] = value
+    return result
+
+
+def _read_job(operand: str) -> object:
+    try:
+        raw = sys.stdin.buffer.read() if operand == "-" else Path(operand).read_bytes()
+        return json.loads(raw.decode("utf-8"), object_pairs_hook=_object)
+    except BatchUsage:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise BatchUsage("job_invalid") from exc
+
+
+def _absolute_string(value: object) -> bool:
+    return isinstance(value, str) and value != "" and Path(value).is_absolute()
+
+
+def _validate_job(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, dict) or set(value) != {"version", "items"}:
+        raise BatchUsage("job_shape_invalid")
+    if type(value["version"]) is not int or value["version"] != 1:
+        raise BatchUsage("job_version_invalid")
+    items = value["items"]
+    if not isinstance(items, list):
+        raise BatchUsage("job_items_invalid")
+    ids: set[str] = set()
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise BatchUsage("job_item_invalid")
+        keys = set(item)
+        if keys not in ({"id", "source", "metadata"}, {"id", "source", "conversion", "metadata"}):
+            raise BatchUsage("job_item_shape_invalid")
+        item_id = item["id"]
+        if not isinstance(item_id, str) or item_id == "" or item_id in ids:
+            raise BatchUsage("job_item_id_invalid")
+        ids.add(item_id)
+        if not _absolute_string(item["source"]):
+            raise BatchUsage("job_source_not_absolute")
+        if "conversion" in item and not _absolute_string(item["conversion"]):
+            raise BatchUsage("job_conversion_not_absolute")
+        metadata = item["metadata"]
+        if not isinstance(metadata, dict) or set(metadata) != {"title", "timestamp", "tags"}:
+            raise BatchUsage("job_metadata_shape_invalid")
+        if not isinstance(metadata["title"], str) or not isinstance(metadata["timestamp"], str):
+            raise BatchUsage("job_metadata_value_invalid")
+        tags = metadata["tags"]
+        if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
+            raise BatchUsage("job_metadata_value_invalid")
+        normalized.append(item)
+    return normalized
+
+
+def _selectors(args: argparse.Namespace) -> list[str]:
+    if args.workspace is not None:
+        if args.bundle_id is not None:
+            raise BatchUsage("invalid_selector")
+        return ["--workspace", args.workspace]
+    if args.bundle_id is None:
+        raise BatchUsage("invalid_selector")
+    return ["--kb-root", args.kb_root, "--bundle-id", args.bundle_id]
+
+
+def _invoke(command: list[str], *, stdin: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        command,
+        input=stdin,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def _result(process: subprocess.CompletedProcess[bytes]) -> dict[str, Any]:
+    try:
+        value = json.loads(process.stdout.decode("ascii"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise BatchUsage("runner_non_result") from exc
+    if (
+        process.stderr != b""
+        or not isinstance(value, dict)
+        or set(value) != RESULT_KEYS
+        or value.get("command") != "record.add"
+        or not isinstance(value.get("data"), dict)
+        or not isinstance(value.get("issues"), list)
+        or any(not isinstance(issue, dict) for issue in value["issues"])
+        or type(value.get("exit_code")) is not int
+        or value.get("status") not in STATUS_EXIT_CODES
+        or STATUS_EXIT_CODES[value["status"]] != value["exit_code"]
+        or process.returncode != value["exit_code"]
+    ):
+        raise BatchUsage("runner_non_result")
+    return value
+
+
+def _write_wrapper(items: list[dict[str, Any]], total: int) -> int:
+    succeeded = sum(item["result"]["status"] == "ok" for item in items)
+    value = {
+        "schema_version": SCHEMA_VERSION,
+        "command": "record.add.batch",
+        "items": items,
+        "summary": {"total": total, "succeeded": succeeded, "failed": total - succeeded},
+    }
+    sys.stdout.buffer.write((json.dumps(value, ensure_ascii=True, separators=(",", ":")) + "\n").encode("ascii"))
+    return 0 if succeeded == total else 1
+
+
+def _run(argv: list[str]) -> int:
+    args = _parser().parse_args(argv)
+    selectors = _selectors(args)
+    items = _validate_job(_read_job(args.job))
+    runner = Path(__file__).absolute().parent / "run_cortex.py"
+    base = [sys.executable, "-I", str(runner)]
+    preflight = _invoke([*base, "--version"])
+    if preflight.returncode != 0 or preflight.stdout.replace(b"\r\n", b"\n") != b"cortex 7.0.0\n" or preflight.stderr != b"":
+        raise BatchUsage("runner_bootstrap_failed")
+    results: list[dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix="cortex-record-add-batch-") as temporary:
+        temporary_path = Path(temporary)
+        for index, item in enumerate(items):
+            metadata_path = temporary_path / f"item-{index}.json"
+            metadata_path.write_text(
+                json.dumps(item["metadata"], ensure_ascii=False, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            command = [*base, "--json", *selectors, "record", "add", "--source", item["source"]]
+            if "conversion" in item:
+                command.extend(("--conversion", item["conversion"]))
+            command.extend(("--metadata", str(metadata_path)))
+            results.append({"id": item["id"], "result": _result(_invoke(command))})
+    return _write_wrapper(results, len(items))
+
+
+def main() -> int:
+    try:
+        return _run(sys.argv[1:])
+    except KeyboardInterrupt:
+        sys.stderr.write("cortex record batch error: interrupted\n")
+        return 2
+    except BatchUsage as exc:
+        sys.stderr.write(f"cortex record batch error: {exc}\n")
+        return 2
+    except Exception:
+        sys.stderr.write("cortex record batch error: wrapper_failed\n")
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''.encode("utf-8")
+
+
 def _manifest_bytes(digest: str) -> bytes:
     value = {
         "schema_version": 1,
@@ -289,6 +518,7 @@ def _expected_payload(root: Path) -> dict[str, bytes]:
     digest = _sha256(wheel)
     return {
         "scripts/run_cortex.py": _runner_bytes(digest),
+        "scripts/run_cortex.cmd": _windows_launcher_bytes(),
         "scripts/runtime-manifest.json": _manifest_bytes(digest),
         f"scripts/vendor/{WHEEL_NAME}": wheel,
     }
@@ -306,6 +536,8 @@ def _install_payload(root: Path, expected: dict[str, bytes]) -> None:
             destination = skill / Path(relative)
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(raw)
+    batch = root / "skills" / "cortex-build" / "scripts" / "batch_record_add.py"
+    batch.write_bytes(_batch_helper_bytes())
 
 
 def _check_payload(root: Path, expected: dict[str, bytes]) -> None:
@@ -324,6 +556,12 @@ def _check_payload(root: Path, expected: dict[str, bytes]) -> None:
         observed.append(actual)
     if observed[0] != observed[1]:
         raise RuntimeError("skill runtime payloads are not byte-identical")
+    build_batch = root / "skills" / "cortex-build" / "scripts" / "batch_record_add.py"
+    manage_batch = root / "skills" / "cortex-manage" / "scripts" / "batch_record_add.py"
+    if not build_batch.is_file() or build_batch.is_symlink() or build_batch.read_bytes() != _batch_helper_bytes():
+        raise RuntimeError("cortex-build batch helper drift")
+    if manage_batch.exists() or manage_batch.is_symlink():
+        raise RuntimeError("batch helper is forbidden in cortex-manage")
 
 
 def main() -> int:

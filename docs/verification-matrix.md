@@ -54,3 +54,8 @@ Repository boundary vocabulary: candidate under KB root; candidate under source 
 | runtime-sc011 | The Cortex 7 public routes, package version, and source CLI contract remain closed. |
 | runtime-sc012 | Source and both bundled runtimes produce equal Results and disposable Bundle trees. |
 | runtime-sc013 | Skills, documentation, capability fixture, and runtime scenario mapping agree. |
+| runtime-sc014 | CORTEX_PYTHON binds the exact Python 3.11/UCD 14 executable before dispatch; missing, relative, Python 3.12, and wrong-file values fail before mutation. |
+| runtime-sc015 | Human stdout and stderr are UTF-8 while compact JSON Result bytes retain ASCII escaping and shape. |
+| runtime-sc016 | The build-only batch helper accepts full and Markdown-only items and returns one ordered wrapper summary. |
+| runtime-sc017 | A valid middle Cortex failure is collected and later batch items continue sequentially. |
+| runtime-sc018 | Malformed jobs, duplicate ids, and relative item paths reject before any runner call or Bundle mutation. |

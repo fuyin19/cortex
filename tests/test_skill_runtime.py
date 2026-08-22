@@ -19,6 +19,7 @@ SKILL_NAMES = ("cortex-build", "cortex-manage")
 WHEEL_NAME = "cortex_record_kb-7.0.0-py3-none-any.whl"
 PAYLOAD_PATHS = (
     Path("scripts/run_cortex.py"),
+    Path("scripts/run_cortex.cmd"),
     Path("scripts/runtime-manifest.json"),
     Path("scripts/vendor") / WHEEL_NAME,
 )
@@ -36,6 +37,11 @@ RUNTIME_SCENARIOS = {
     "runtime-sc011": "The Cortex 7 public routes, package version, and source CLI contract remain closed.",
     "runtime-sc012": "Source and both bundled runtimes produce equal Results and disposable Bundle trees.",
     "runtime-sc013": "Skills, documentation, capability fixture, and runtime scenario mapping agree.",
+    "runtime-sc014": "CORTEX_PYTHON binds the exact Python 3.11/UCD 14 executable before dispatch; missing, relative, Python 3.12, and wrong-file values fail before mutation.",
+    "runtime-sc015": "Human stdout and stderr are UTF-8 while compact JSON Result bytes retain ASCII escaping and shape.",
+    "runtime-sc016": "The build-only batch helper accepts full and Markdown-only items and returns one ordered wrapper summary.",
+    "runtime-sc017": "A valid middle Cortex failure is collected and later batch items continue sequentially.",
+    "runtime-sc018": "Malformed jobs, duplicate ids, and relative item paths reject before any runner call or Bundle mutation.",
 }
 
 
@@ -43,11 +49,21 @@ def _skill(name: str) -> Path:
     return ROOT / "skills" / name
 
 
-def _runner(skill: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def _runner(
+    skill: Path,
+    *args: str,
+    env: dict[str, str] | None = None,
+    cortex_python: str | None = os.path.abspath(sys.executable),
+) -> subprocess.CompletedProcess[str]:
+    launch_env = dict(os.environ if env is None else env)
+    if cortex_python is None:
+        launch_env.pop("CORTEX_PYTHON", None)
+    else:
+        launch_env["CORTEX_PYTHON"] = cortex_python
     return subprocess.run(
         [sys.executable, "-I", str(skill / "scripts" / "run_cortex.py"), *args],
         cwd=skill,
-        env=env,
+        env=launch_env,
         capture_output=True,
         text=True,
         timeout=30,
@@ -126,7 +142,9 @@ def test_runtime_sc005_no_child_network_install_update_or_cache(tmp_path: Path) 
     runner_text = (copied / "scripts" / "run_cortex.py").read_text("utf-8")
     builder_text = (ROOT / "tools" / "package_skill_runtime.py").read_text("utf-8")
     for forbidden in ("import subprocess", "import socket", "import urllib", "import requests"):
-        assert forbidden not in runner_text and forbidden not in builder_text
+        assert forbidden not in runner_text
+    for forbidden in ("import socket", "import urllib", "import requests"):
+        assert forbidden not in builder_text
     for forbidden_call in ("pip install", "latest", "auto-update"):
         assert forbidden_call not in runner_text.lower()
     sentinel = tmp_path / "commands"
@@ -287,12 +305,20 @@ def test_runtime_sc012_source_and_bundles_have_equal_results_and_trees(tmp_path:
 def test_runtime_sc013_surfaces_and_exact_mapping_agree() -> None:
     fixture = json.loads((ROOT / "fixtures" / "capabilities" / "cortex7-surface.json").read_text("utf-8"))
     assert fixture["global_command"] is False
-    assert fixture["agent_entrypoint"] == "absolute-python-3.11 -I skill-local-runner"
+    assert fixture["agent_entrypoint"] == "CORTEX_PYTHON absolute-python-3.11-ucd14 -I skill-local-runner"
     assert fixture["skill_runtime"] == {
         "artifact": WHEEL_NAME,
         "offline": True,
         "independently_complete": True,
         "payloads_byte_identical": True,
+        "required_environment": "CORTEX_PYTHON",
+        "human_stream_encoding": "utf-8",
+        "json_ascii_escaping": True,
+        "windows_launcher": "run_cortex.cmd",
+    }
+    assert fixture["batch_helper"] == {
+        "skill": "cortex-build", "script": "batch_record_add.py", "schema_version": 1,
+        "command": "record.add.batch", "core_route": False, "sequential": True, "rollback": False,
     }
     combined = "\n".join(
         (ROOT / relative).read_text("utf-8")
@@ -301,7 +327,7 @@ def test_runtime_sc013_surfaces_and_exact_mapping_agree() -> None:
             "skills/cortex-build/SKILL.md", "skills/cortex-manage/SKILL.md",
         )
     )
-    for required in ("-I", "skill-local", "7.0.0", "complete", "global"):
+    for required in ("CORTEX_PYTHON", "-I", "skill-local", "7.0.0", "complete", "global", "UTF-8"):
         assert required in combined
     matrix = (ROOT / "docs" / "verification-matrix.md").read_text("utf-8")
     actual: dict[str, str] = {}
@@ -310,3 +336,189 @@ def test_runtime_sc013_surfaces_and_exact_mapping_agree() -> None:
             cells = [cell.strip() for cell in line.split("|")]
             actual[cells[1]] = cells[2]
     assert actual == RUNTIME_SCENARIOS
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    ((None, "cortex_python_required"), ("python", "non_absolute_path")),
+)
+def test_runtime_sc014_missing_or_relative_binding_fails_before_mutation(
+    tmp_path: Path, configured: str | None, expected: str
+) -> None:
+    workspace = tmp_path / "must-not-exist"
+    result = _runner(
+        _skill("cortex-build"),
+        "--workspace", str(workspace), "manage", "init",
+        cortex_python=configured,
+    )
+    assert result.returncode == 70 and expected in result.stderr and result.stdout == ""
+    assert not workspace.exists()
+
+
+def test_runtime_sc014_wrong_file_binding_fails_before_mutation(tmp_path: Path) -> None:
+    wrong = tmp_path / Path(sys.executable).name
+    shutil.copyfile(sys.executable, wrong)
+    workspace = tmp_path / "must-not-exist"
+    result = _runner(
+        _skill("cortex-manage"),
+        "--workspace", str(workspace), "manage", "init",
+        cortex_python=str(wrong.absolute()),
+    )
+    assert result.returncode == 70 and "cortex_python_mismatch" in result.stderr
+    assert not workspace.exists()
+
+
+def test_runtime_sc014_python312_fails_before_mutation_when_available(tmp_path: Path) -> None:
+    candidates = [shutil.which("python3.12")]
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        candidates.append(str(Path(local_app_data) / "Programs" / "Python" / "Python312" / "python.exe"))
+    python312 = next((Path(value) for value in candidates if value and Path(value).is_file()), None)
+    if python312 is None:
+        pytest.skip("Python 3.12 is unavailable")
+    workspace = tmp_path / "must-not-exist"
+    env = dict(os.environ)
+    env["CORTEX_PYTHON"] = str(python312.absolute())
+    result = subprocess.run(
+        [str(python312), "-I", str(_skill("cortex-build") / "scripts" / "run_cortex.py"),
+         "--workspace", str(workspace), "manage", "init"],
+        cwd=_skill("cortex-build"), env=env, capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert result.returncode == 70 and "python_3_11_required" in result.stderr
+    assert not workspace.exists()
+
+
+def _configure_bundle_for_runtime(tmp_path: Path) -> Path:
+    bundle = tmp_path / "bundle"
+    assert _runner(_skill("cortex-build"), "--json", "--workspace", str(bundle), "manage", "init").returncode == 0
+    values = {
+        "tags": {"version": 2, "groups": [
+            {"name": "project", "tags": [{"tag": "project-alpha", "description": "Alpha"}]},
+            {"name": "kind", "tags": [{"tag": "research", "description": "Research"}]},
+        ]},
+        "layout": {"version": 4, "partition_tag_group": "project", "partition_name_strategy": "tag",
+                   "unit_name_strategy": "tag-title-date", "max_component_length": 96,
+                   "duplicate_name_strategy": "reject"},
+    }
+    for name, value in values.items():
+        operand = tmp_path / f"{name}.json"
+        operand.write_text(json.dumps(value), encoding="utf-8")
+        result = _runner(
+            _skill("cortex-build"), "--json", "--workspace", str(bundle), "manage", "config", "set",
+            "--profile", name, "--file", str(operand),
+        )
+        assert result.returncode == 0, result.stdout
+    return bundle
+
+
+def _batch(skill: Path, *args: str, stdin: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
+    env = dict(os.environ)
+    env["CORTEX_PYTHON"] = os.path.abspath(sys.executable)
+    return subprocess.run(
+        [sys.executable, "-I", str(skill / "scripts" / "batch_record_add.py"), *args],
+        cwd=skill, env=env, input=stdin, capture_output=True, timeout=30, check=False,
+    )
+
+
+def _metadata(title: str) -> dict[str, object]:
+    return {"title": title, "timestamp": "2026-08-22T00:00:00Z", "tags": ["project-alpha", "research"]}
+
+
+def test_runtime_sc015_human_utf8_and_json_ascii_parity(tmp_path: Path) -> None:
+    bundle = _configure_bundle_for_runtime(tmp_path)
+    source = tmp_path / "unicode.md"
+    source.write_bytes("# 漢字\n".encode("utf-8"))
+    metadata = tmp_path / "unicode.json"
+    metadata.write_text(json.dumps(_metadata("漢字 memo"), ensure_ascii=False), encoding="utf-8")
+    added = _runner(
+        _skill("cortex-build"), "--json", "--workspace", str(bundle), "record", "add",
+        "--source", str(source), "--metadata", str(metadata),
+    )
+    coordinates = json.loads(added.stdout)["data"]
+    env = dict(os.environ)
+    env["PYTHONIOENCODING"] = "ascii"
+    env["CORTEX_PYTHON"] = os.path.abspath(sys.executable)
+    command = [
+        sys.executable, "-I", str(_skill("cortex-build") / "scripts" / "run_cortex.py"),
+        "--workspace", str(bundle), "record", "show", "--partition", coordinates["partition"],
+        "--record", coordinates["record"],
+    ]
+    human = subprocess.run(command, cwd=_skill("cortex-build"), env=env, capture_output=True, timeout=30, check=False)
+    machine = subprocess.run(command[:3] + ["--json", *command[3:]], cwd=_skill("cortex-build"), env=env,
+                             capture_output=True, timeout=30, check=False)
+    assert human.returncode == 0 and "漢字".encode("utf-8") in human.stdout and human.stderr == b""
+    assert machine.returncode == 0 and machine.stderr == b"" and all(byte < 128 for byte in machine.stdout)
+    assert b"\\u6f22\\u5b57" in machine.stdout
+    assert set(json.loads(machine.stdout)) == {"status", "exit_code", "command", "data", "issues"}
+
+
+def test_runtime_sc016_build_only_batch_mixes_full_and_markdown(tmp_path: Path) -> None:
+    assert (_skill("cortex-build") / "scripts" / "batch_record_add.py").is_file()
+    assert not (_skill("cortex-manage") / "scripts" / "batch_record_add.py").exists()
+    bundle = _configure_bundle_for_runtime(tmp_path)
+    registry = tmp_path / "registry-input.json"
+    registry.write_text(json.dumps({
+        "version": 1,
+        "bundles": [{"id": "alpha", "path": bundle.name, "description": "Alpha"}],
+    }), encoding="utf-8")
+    registered = _runner(
+        _skill("cortex-build"), "--json", "--kb-root", str(tmp_path), "registry", "set",
+        "--file", str(registry),
+    )
+    assert registered.returncode == 0, registered.stdout
+    markdown = tmp_path / "plain.md"
+    markdown.write_bytes(b"# plain\n")
+    source = tmp_path / "full.pdf"
+    source.write_bytes(b"pdf-source")
+    conversion = tmp_path / "conversion"
+    (conversion / "src").mkdir(parents=True)
+    (conversion / "full.md").write_bytes(b"# full\n")
+    (conversion / "full.json").write_bytes(b"{}\n")
+    (conversion / "src" / "full.pdf").write_bytes(source.read_bytes())
+    job = {"version": 1, "items": [
+        {"id": "full", "source": str(source), "conversion": str(conversion), "metadata": _metadata("Full item")},
+        {"id": "markdown", "source": str(markdown), "metadata": _metadata("Markdown item")},
+    ]}
+    result = _batch(_skill("cortex-build"), "--kb-root", str(tmp_path), "--bundle-id", "alpha", "--job", "-",
+                    stdin=json.dumps(job).encode("utf-8"))
+    wrapper = json.loads(result.stdout)
+    assert result.returncode == 0 and result.stderr == b""
+    assert wrapper["command"] == "record.add.batch" and wrapper["schema_version"] == 1
+    assert [item["id"] for item in wrapper["items"]] == ["full", "markdown"]
+    assert wrapper["summary"] == {"total": 2, "succeeded": 2, "failed": 0}
+
+
+def test_runtime_sc017_middle_failure_continues(tmp_path: Path) -> None:
+    bundle = _configure_bundle_for_runtime(tmp_path)
+    first = tmp_path / "first.md"; first.write_bytes(b"first")
+    invalid = tmp_path / "invalid.pdf"; invalid.write_bytes(b"invalid")
+    last = tmp_path / "last.md"; last.write_bytes(b"last")
+    job = {"version": 1, "items": [
+        {"id": "first", "source": str(first), "metadata": _metadata("First")},
+        {"id": "invalid", "source": str(invalid), "metadata": _metadata("Invalid")},
+        {"id": "last", "source": str(last), "metadata": _metadata("Last")},
+    ]}
+    result = _batch(_skill("cortex-build"), "--workspace", str(bundle), "--job", "-",
+                    stdin=json.dumps(job).encode("utf-8"))
+    wrapper = json.loads(result.stdout)
+    assert result.returncode == 1 and result.stderr == b""
+    assert [item["result"]["status"] for item in wrapper["items"]] == ["ok", "validation_error", "ok"]
+    assert wrapper["summary"] == {"total": 3, "succeeded": 2, "failed": 1}
+    assert any(path.name.startswith("project-alpha-last-") for path in (bundle / "project-alpha").iterdir())
+
+
+@pytest.mark.parametrize("case", ("malformed", "duplicate", "relative"))
+def test_runtime_sc018_invalid_job_rejects_before_runner_or_mutation(tmp_path: Path, case: str) -> None:
+    workspace = tmp_path / "must-not-exist"
+    if case == "malformed":
+        raw = b'{"version":1,"items":['
+    elif case == "duplicate":
+        item = {"id": "same", "source": str((tmp_path / "a.md").absolute()), "metadata": _metadata("A")}
+        raw = json.dumps({"version": 1, "items": [item, item]}).encode("utf-8")
+    else:
+        raw = json.dumps({"version": 1, "items": [
+            {"id": "relative", "source": "relative.md", "metadata": _metadata("Relative")},
+        ]}).encode("utf-8")
+    result = _batch(_skill("cortex-build"), "--workspace", str(workspace), "--job", "-", stdin=raw)
+    assert result.returncode == 2 and result.stdout == b"" and b"cortex record batch error:" in result.stderr
+    assert not workspace.exists()

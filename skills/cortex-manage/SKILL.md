@@ -5,7 +5,7 @@ description: Inspect and manage Cortex 7.0 Bundles, profiles, exact partitioned 
 
 # Cortex manage
 
-Use `<ABSOLUTE-PYTHON-3.11> -I <ABSOLUTE-SKILL>/scripts/run_cortex.py`; require `--version` to emit exactly `cortex 7.0.0` and empty stderr. Do not fall back to a global command, ambient package, installation, sibling skill, network, or update.
+Set `CORTEX_PYTHON` to the lexical absolute path of the intended Python 3.11/UCD 14 executable. The launcher verifies that path is an ordinary non-reparse file reached through ordinary non-reparse ancestors and is the same filesystem entry as `sys.executable`. On POSIX invoke `"$CORTEX_PYTHON" -I <ABSOLUTE-SKILL>/scripts/run_cortex.py`; on Windows use the identical convenience launcher `<ABSOLUTE-SKILL>\scripts\run_cortex.cmd`. Require `--version` to emit exactly `cortex 7.0.0` and empty stderr. Do not use PATH or fall back to a global command, ambient package, installation, sibling skill, network, or update.
 
 Record edit/show/delete require separate exact safe components:
 
