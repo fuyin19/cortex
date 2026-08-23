@@ -1,7 +1,7 @@
 {
   "name": "cortex",
-  "version": "8.0.0",
-  "description": "Cortex with three canonical KB skills and three canonical Notes skills.",
+  "version": "9.0.0",
+  "description": "Explicit-only Cortex router with three canonical KB roles and three canonical Notes roles.",
   "author": {
     "name": "fuyin"
   }

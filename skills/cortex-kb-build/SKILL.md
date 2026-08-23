@@ -1,9 +1,11 @@
 ---
 name: cortex-kb-build
-description: Initialize, configure, and register Cortex 7.0 Bundles through a single explicit keyed-monotonic build session.
+description: Explicit invocation only for initializing, configuring, and registering Cortex 7.0 Bundles in one keyed-monotonic build session.
 ---
 
 # Cortex KB build
+
+Use this role only when the user explicitly names `cortex-kb-build`, or explicitly invokes `cortex` and the router selects KB build. Generic note, KB, or coding requests are insufficient triggers.
 
 Use this skill only for `manage.init`, `manage.config.set`, and `registry.set`. Never add, edit, show, or delete records, and never use another runtime route as a build step. The embedded runtime remains the complete closed Cortex 7 CLI; these ownership boundaries are this skill's contract, not runtime route removal.
 

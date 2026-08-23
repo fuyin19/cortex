@@ -1,9 +1,11 @@
 ---
 name: cortex-kb-ingest
-description: Add individual records or an explicit exact-v1 batch to an already configured Cortex 7.0 Bundle.
+description: Explicit invocation only for adding records or an exact-v1 batch to an already configured Cortex 7.0 Bundle.
 ---
 
 # Cortex KB ingest
+
+Use this role only when the user explicitly names `cortex-kb-ingest`, or explicitly invokes `cortex` and the router selects KB ingest. Generic note, KB, or coding requests are insufficient triggers.
 
 Use this skill only for `record.add` and the skill-local exact-v1 batch wrapper. Never initialize a Bundle, change profiles or Registry 1, edit/show/delete records, infer metadata, repair, migrate, or cut over. The embedded runtime remains the complete closed Cortex 7 CLI; these ownership boundaries are this skill's contract, not runtime route removal.
 

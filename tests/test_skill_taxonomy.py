@@ -9,6 +9,9 @@ from cortex.constants import PUBLIC_ROUTES, VERSION
 ROOT = Path(__file__).parents[1]
 CANONICAL = ("cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage")
 RUNTIMES = CANONICAL
+NOTES = ("cortex-notes-ingest", "cortex-notes-build", "cortex-notes-manage")
+ROLES = (*CANONICAL, *NOTES)
+ROUTER = "cortex"
 WRITE_OWNERS = {
     "manage.init": "cortex-kb-build",
     "manage.config.set": "cortex-kb-build",
@@ -109,7 +112,7 @@ def test_taxonomy_sc006_first_failure_stops_and_reports_late_residue() -> None:
     assert "late `registry.set` failure" in build and "never delete it" in build
 
 
-def test_taxonomy_sc007_core_runtime_is_invariant_and_plugin_is_v8() -> None:
+def test_taxonomy_sc007_core_runtime_is_invariant_and_plugin_is_v9() -> None:
     assert VERSION == "7.0.0"
     assert tuple(PUBLIC_ROUTES) == (
         "registry.show", "registry.validate", "registry.resolve", "registry.set",
@@ -119,7 +122,7 @@ def test_taxonomy_sc007_core_runtime_is_invariant_and_plugin_is_v8() -> None:
     package = json.loads((ROOT / "package.json").read_text("utf-8"))
     plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text("utf-8"))
     assert package == {"name": "cortex-record-kb", "version": "7.0.0", "description": "Minimal single-writer record knowledge base."}
-    assert plugin["version"] == "8.0.0" and "three canonical KB skills" in plugin["description"]
+    assert plugin["version"] == "9.0.0" and "Explicit-only Cortex router" in plugin["description"]
     assert (ROOT / "tools" / "migrate_legacy_layout3.py").is_file()
 
 
@@ -132,3 +135,40 @@ def test_taxonomy_runtime_and_batch_owner_lists_are_ordered_and_exact() -> None:
     helpers = {name: (ROOT / "skills" / name / "scripts" / "batch_record_add.py") for name in RUNTIMES}
     assert helpers["cortex-kb-ingest"].is_file()
     assert all(not path.exists() for name, path in helpers.items() if name != "cortex-kb-ingest")
+
+
+def test_taxonomy_sc008_router_matrix_is_instruction_only_and_fail_closed() -> None:
+    router = _skill(ROUTER)
+    assert not (ROOT / "skills" / ROUTER / "scripts").exists()
+    for domain in ("KB", "Notes"):
+        assert domain in router
+    for action in ("build", "ingest", "manage"):
+        assert action in router
+    for role in ROLES:
+        assert f"../{role}/SKILL.md" in router
+    for required in (
+        "exactly one domain", "exactly one action", "read and follow exactly one sibling role skill",
+        "ask for clarification", "required existing state is missing", "fail closed",
+        "no scripts, runtime, domain operations, CLI forms, or confirmation logic",
+    ):
+        assert required in router
+
+
+def test_taxonomy_sc009_all_seven_are_explicit_only_with_minimal_metadata() -> None:
+    fixture = json.loads((ROOT / "fixtures" / "capabilities" / "cortex7-surface.json").read_text("utf-8"))
+    taxonomy = fixture["skill_taxonomy"]
+    assert taxonomy["router"] == ROUTER
+    assert taxonomy["canonical_roles"] == list(ROLES)
+    assert taxonomy["invocation_policy"] == {name: "explicit-only" for name in (ROUTER, *ROLES)}
+    assert taxonomy["router_runtime"] is False
+    for name in (ROUTER, *ROLES):
+        skill = _skill(name)
+        metadata = _frontmatter(skill)
+        assert "Explicit invocation only" in metadata["description"]
+        assert "generic" in skill.casefold() and "insufficient" in skill.casefold()
+        assert (ROOT / "skills" / name / "agents" / "openai.yaml").read_text("utf-8") == (
+            "policy:\n  allow_implicit_invocation: false\n"
+        )
+    assert (ROOT / "CLAUDE.md").read_text("utf-8") == "@AGENTS.md\n"
+    agents = (ROOT / "AGENTS.md").read_text("utf-8")
+    assert "one instruction-only non-role router" in agents and "exactly six canonical roles" in agents

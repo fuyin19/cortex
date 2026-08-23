@@ -14,7 +14,9 @@
   "agent_entrypoint": "CORTEX_PYTHON absolute-python-3.11-ucd14 -I skill-local-runner",
   "global_command": false,
   "skill_taxonomy": {
+    "router": "cortex",
     "canonical": ["cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage"],
+    "canonical_roles": ["cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage", "cortex-notes-ingest", "cortex-notes-build", "cortex-notes-manage"],
     "write_owners": {
       "manage.init": "cortex-kb-build",
       "manage.config.set": "cortex-kb-build",
@@ -26,10 +28,15 @@
     "read_owner": "cortex-kb-manage",
     "aliases": {},
     "invocation_policy": {
-      "cortex-kb-ingest": "implicit-allowed",
-      "cortex-kb-build": "implicit-allowed",
-      "cortex-kb-manage": "implicit-allowed"
+      "cortex": "explicit-only",
+      "cortex-kb-ingest": "explicit-only",
+      "cortex-kb-build": "explicit-only",
+      "cortex-kb-manage": "explicit-only",
+      "cortex-notes-ingest": "explicit-only",
+      "cortex-notes-build": "explicit-only",
+      "cortex-notes-manage": "explicit-only"
     },
+    "router_runtime": false,
     "enforcement": "skill-contract-only"
   },
   "skill_runtime": {"skills": ["cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage"], "artifact": "cortex_record_kb-7.0.0-py3-none-any.whl", "offline": true, "independently_complete": true, "payloads_byte_identical": true, "required_environment": "CORTEX_PYTHON", "human_stream_encoding": "utf-8", "json_ascii_escaping": true, "windows_launcher": "run_cortex.cmd"},

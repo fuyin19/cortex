@@ -24,8 +24,8 @@ def _parser() -> Parser:
     parser = Parser(prog="cortex-notes", add_help=True)
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--json", action="store_true")
-    parser.add_argument("--root", default=str(core.DEFAULT_ROOT))
-    parser.add_argument("--tools-root", default=str(core.DEFAULT_TOOLS_ROOT))
+    parser.add_argument("--root")
+    parser.add_argument("--tools-root")
     families = parser.add_subparsers(dest="family")
     registry = families.add_parser("registry"); registry_actions = registry.add_subparsers(dest="action", required=True)
     registry_actions.add_parser("init"); registry_actions.add_parser("show"); registry_actions.add_parser("validate")
@@ -33,7 +33,9 @@ def _parser() -> Parser:
     bundle = families.add_parser("bundle"); bundle_actions = bundle.add_subparsers(dest="action", required=True)
     for action in ("init", "show", "resolve", "validate"):
         item = bundle_actions.add_parser(action); item.add_argument("--bundle", required=True)
-    part = bundle_actions.add_parser("partition-add"); part.add_argument("--bundle", required=True); part.add_argument("--partition", required=True)
+    config = bundle_actions.add_parser("config"); config_actions = config.add_subparsers(dest="config_action", required=True)
+    config_show = config_actions.add_parser("show"); config_show.add_argument("--bundle", required=True); config_show.add_argument("--profile", choices=("note", "tags", "layout"), required=True)
+    config_set = config_actions.add_parser("set"); config_set.add_argument("--bundle", required=True); config_set.add_argument("--profile", choices=("note", "tags", "layout"), required=True); config_set.add_argument("--file", required=True)
     note = families.add_parser("note"); note_actions = note.add_subparsers(dest="action", required=True)
     add = note_actions.add_parser("add"); add.add_argument("--bundle", required=True); add.add_argument("--partition"); add.add_argument("--title", required=True); add.add_argument("--body-file", required=True); add.add_argument("--timestamp")
     listing = note_actions.add_parser("list"); listing.add_argument("--bundle", required=True); listing.add_argument("--partition", required=True); listing.add_argument("--state", choices=("active", "archived", "all"), default="active")
@@ -46,12 +48,17 @@ def _parser() -> Parser:
 
 
 def _command(args: argparse.Namespace) -> str:
-    action = str(getattr(args, "action", "usage")).replace("partition-add", "partition.add")
+    if getattr(args, "family", None) == "bundle" and getattr(args, "action", None) == "config":
+        return "notes.bundle.config." + str(args.config_action)
+    action = str(getattr(args, "action", "usage"))
     return "notes." + str(args.family or "cli") + "." + action
 
 
 def _dispatch(args: argparse.Namespace) -> dict[str, object]:
-    root, tools = Path(args.root), Path(args.tools_root)
+    if not args.root:
+        raise core.NotesError("usage_error", "root_required")
+    root = Path(args.root)
+    tools = Path(args.tools_root) if args.tools_root else None
     if args.family == "registry":
         if args.action == "init": return core.registry_init(root)
         if args.action == "show": return core.registry_show(root)
@@ -62,7 +69,8 @@ def _dispatch(args: argparse.Namespace) -> dict[str, object]:
         if args.action == "show": return core.bundle_show(root, args.bundle)
         if args.action == "resolve": return core.bundle_resolve(root, args.bundle)
         if args.action == "validate": return core.validate(root, args.bundle)
-        return core.partition_add(root, args.bundle, args.partition, tools)
+        if args.config_action == "show": return core.bundle_config_show(root, args.bundle, args.profile)
+        return core.bundle_config_set(root, args.bundle, args.profile, Path(args.file), tools)
     if args.action == "add": return core.note_add(root, tools, args.bundle, args.partition, args.title, Path(args.body_file), args.timestamp)
     if args.action == "list": return core.note_list(root, args.bundle, args.partition, None if args.state == "all" else args.state == "archived")
     if args.action == "show": return core.note_show(root, args.bundle, args.partition, args.note, args.archived)

@@ -11,9 +11,9 @@ import sys
 import unicodedata
 import zipfile
 
-VERSION = "1.0.0"
-WHEEL = "cortex_notes-1.0.0-py3-none-any.whl"
-DIGEST = "724523508246eef977b571b76753df71fe88848f9102f9fa0e159611105c1c04"
+VERSION = "2.0.0"
+WHEEL = "cortex_notes-2.0.0-py3-none-any.whl"
+DIGEST = "6b6bdeb375f27c19d399ce2edcce33f39c0726223118bb61bf126ae253c839c5"
 BOOTSTRAP_EXIT = 70
 
 class BootstrapError(Exception): pass
@@ -54,9 +54,9 @@ def _run() -> int:
         if hashlib.sha256(raw).hexdigest() != DIGEST: raise BootstrapError("wheel_digest_mismatch")
         with zipfile.ZipFile(wheel) as archive:
             names = archive.namelist()
-            if len(names) != len(set(names)) or "cortex_notes-1.0.0.dist-info/METADATA" not in names: raise BootstrapError("wheel_metadata_invalid")
-            metadata = archive.read("cortex_notes-1.0.0.dist-info/METADATA").decode("utf-8")
-            if "Name: cortex-notes\n" not in metadata or "Version: 1.0.0\n" not in metadata or "Requires-Dist:" in metadata: raise BootstrapError("wheel_metadata_invalid")
+            if len(names) != len(set(names)) or "cortex_notes-2.0.0.dist-info/METADATA" not in names: raise BootstrapError("wheel_metadata_invalid")
+            metadata = archive.read("cortex_notes-2.0.0.dist-info/METADATA").decode("utf-8")
+            if "Name: cortex-notes\n" not in metadata or "Version: 2.0.0\n" not in metadata or "Requires-Dist:" in metadata: raise BootstrapError("wheel_metadata_invalid")
             if any(name.endswith("entry_points.txt") for name in names): raise BootstrapError("wheel_entry_point_forbidden")
     except BootstrapError: raise
     except Exception as exc: raise BootstrapError("wheel_invalid") from exc

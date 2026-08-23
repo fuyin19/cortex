@@ -1,11 +1,13 @@
 ---
 name: cortex-notes-manage
-description: Inspect, validate, edit, archive, or confirmed-delete exact Cortex Notes units.
+description: Explicit invocation only for inspecting, validating, editing, archiving, or confirmed-deleting exact Cortex Notes 2 units.
 ---
 
 # Cortex Notes manage
 
-Use this skill for `notes.registry.show`, `notes.registry.resolve`, `notes.registry.validate`, `notes.bundle.show`, `notes.bundle.resolve`, `notes.bundle.validate`, `notes.note.list`, `notes.note.show`, `notes.note.edit`, `notes.note.archive`, and `notes.note.delete`. Never initialize storage, expand partitions, or add notes.
+Use this role only when the user explicitly names `cortex-notes-manage`, or explicitly invokes `cortex` and the router selects Notes manage. Generic note, KB, or coding requests are insufficient triggers.
+
+Own `notes.registry.show`, `notes.registry.resolve`, `notes.registry.validate`, `notes.bundle.show`, `notes.bundle.resolve`, `notes.bundle.validate`, `notes.bundle.config.show`, `notes.note.list`, `notes.note.show`, `notes.note.edit`, `notes.note.archive`, and `notes.note.delete`. Never initialize storage, set profiles, or add notes. Read and validate Note 1, Tag 2, and Layout 1, then dispatch solely from those profiles. Never dispatch from a Bundle id and never use a tools root for reads or existing-note management.
 
 Invoke the complete skill-local runtime through the absolute `CORTEX_PYTHON` Python 3.11/UCD 14 interpreter with `-I`. Existing-note mutations require the fresh lowercase `tree_sha256` returned for the same canonical root, bundle, partition, note id, archive state, and bytes. Edit changes `note.md` only. Archive moves the whole unit once within its partition; there is no restore or move operation.
 

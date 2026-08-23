@@ -15,11 +15,11 @@ import stat
 import zipfile
 
 
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 DISTRIBUTION = "cortex-notes"
 IMPORT_NAME = "cortex_notes"
-WHEEL_NAME = "cortex_notes-1.0.0-py3-none-any.whl"
-DIST_INFO = "cortex_notes-1.0.0.dist-info"
+WHEEL_NAME = "cortex_notes-2.0.0-py3-none-any.whl"
+DIST_INFO = "cortex_notes-2.0.0.dist-info"
 SKILLS = ("cortex-notes-ingest", "cortex-notes-build", "cortex-notes-manage")
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
@@ -50,7 +50,7 @@ def _source(root: Path) -> list[tuple[str, bytes]]:
     if {name.rsplit("/", 1)[-1] for name, _raw in result} != {"__init__.py", "__main__.py", "cli.py", "core.py"}:
         raise RuntimeError("Notes source package is incomplete")
     project = (root / "notes_runtime" / "pyproject.toml").read_text("utf-8")
-    for exact in ('name = "cortex-notes"', 'version = "1.0.0"', 'dependencies = []'):
+    for exact in ('name = "cortex-notes"', 'version = "2.0.0"', 'dependencies = []'):
         if exact not in project:
             raise RuntimeError("Notes project contract mismatch")
     if "[project.scripts]" in project:
@@ -62,7 +62,7 @@ def _wheel(root: Path) -> bytes:
     members = _source(root)
     members.extend((
         (f"{DIST_INFO}/METADATA", (
-            "Metadata-Version: 2.1\nName: cortex-notes\nVersion: 1.0.0\n"
+            "Metadata-Version: 2.1\nName: cortex-notes\nVersion: 2.0.0\n"
             "Summary: Minimal file-native Notes runtime for Cortex\nRequires-Python: >=3.11,<3.12\n\n"
         ).encode()),
         (f"{DIST_INFO}/WHEEL", b"Wheel-Version: 1.0\nGenerator: cortex-notes-runtime\nRoot-Is-Purelib: true\nTag: py3-none-any\n\n"),
@@ -93,8 +93,8 @@ import sys
 import unicodedata
 import zipfile
 
-VERSION = "1.0.0"
-WHEEL = "cortex_notes-1.0.0-py3-none-any.whl"
+VERSION = "2.0.0"
+WHEEL = "cortex_notes-2.0.0-py3-none-any.whl"
 DIGEST = "__DIGEST__"
 BOOTSTRAP_EXIT = 70
 
@@ -136,9 +136,9 @@ def _run() -> int:
         if hashlib.sha256(raw).hexdigest() != DIGEST: raise BootstrapError("wheel_digest_mismatch")
         with zipfile.ZipFile(wheel) as archive:
             names = archive.namelist()
-            if len(names) != len(set(names)) or "cortex_notes-1.0.0.dist-info/METADATA" not in names: raise BootstrapError("wheel_metadata_invalid")
-            metadata = archive.read("cortex_notes-1.0.0.dist-info/METADATA").decode("utf-8")
-            if "Name: cortex-notes\n" not in metadata or "Version: 1.0.0\n" not in metadata or "Requires-Dist:" in metadata: raise BootstrapError("wheel_metadata_invalid")
+            if len(names) != len(set(names)) or "cortex_notes-2.0.0.dist-info/METADATA" not in names: raise BootstrapError("wheel_metadata_invalid")
+            metadata = archive.read("cortex_notes-2.0.0.dist-info/METADATA").decode("utf-8")
+            if "Name: cortex-notes\n" not in metadata or "Version: 2.0.0\n" not in metadata or "Requires-Dist:" in metadata: raise BootstrapError("wheel_metadata_invalid")
             if any(name.endswith("entry_points.txt") for name in names): raise BootstrapError("wheel_entry_point_forbidden")
     except BootstrapError: raise
     except Exception as exc: raise BootstrapError("wheel_invalid") from exc
@@ -192,9 +192,23 @@ def _prepare(root: Path, skill: str, expected: dict[str, bytes]) -> Path:
     return target
 
 
+def _check_router(root: Path) -> None:
+    target = root / "skills" / "cortex"
+    info = target.lstat()
+    if stat.S_ISLNK(info.st_mode) or _is_reparse(info) or not stat.S_ISDIR(info.st_mode):
+        raise RuntimeError("unsafe Cortex router")
+    skill = target / "SKILL.md"
+    info = skill.lstat()
+    if stat.S_ISLNK(info.st_mode) or _is_reparse(info) or not stat.S_ISREG(info.st_mode):
+        raise RuntimeError("Cortex router instructions missing")
+    if (target / "scripts").exists():
+        raise RuntimeError("Cortex router must not package a runtime")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--check", action="store_true"); args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]; expected = _payload(root)
+    _check_router(root)
     prepared = [_prepare(root, skill, expected) for skill in SKILLS]
     if not args.check:
         for skill in prepared:

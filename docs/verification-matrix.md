@@ -32,7 +32,7 @@
 | sc028 | No installed/public migration or cutover route exists. |
 | sc029 | ibd-projects gates 30 partitions, 395 total, 25 full, 370 Markdown-only. |
 | sc030 | All three canonical KB skills carry one pinned, byte-identical Cortex 7.0.0 runtime; only ingest carries the helper. |
-| sc031 | Implementation, AGENTS, docs, all six canonical KB and Notes skills, invocation metadata, and capability fixtures agree. |
+| sc031 | Implementation, AGENTS/CLAUDE adapter, docs, the non-role router, all six canonical roles, explicit-only metadata, and capability fixtures agree. |
 | sc032 | Full pytest, external-cache compileall, package, and runtime check pass. |
 | sc033 | Candidate/staging under the actual Cortex repo, validated KB root, or derived KB repo, plus false/omitted boundary operands and wrong-volume staging, reject before output. |
 | sc034 | The repository contains exactly one noninstalled migration utility and it exposes deterministic Layout3-to-Layout4 plan/build only, with no cutover function, subcommand, or product route. |
@@ -68,4 +68,23 @@ Repository boundary vocabulary: candidate under KB root; candidate under source 
 | taxonomy-sc004 | Build candidates retain keyed Tags/membership and Registry id-to-path mappings and reject contraction prewrite. |
 | taxonomy-sc005 | Populated bytes freeze; configured maximum expansion is Layout-before-Tags; null sentinel is Tags-before-Layout. |
 | taxonomy-sc006 | First failure stops later mutation and reports completed_steps, failed_step, residual_path, orphan, and the core Result. |
-| taxonomy-sc007 | Core routes, profiles, version, source tree, package metadata, and migration utility remain unchanged; legacy alias trees are removed and repository taxonomy is exactly six canonical skills. |
+| taxonomy-sc007 | KB core routes, profiles, version, source tree, package metadata, migration utility, and three KB wheels remain unchanged; repository taxonomy is one router plus six roles. |
+| taxonomy-sc008 | `cortex` is an instruction-only explicit router that selects exactly one KB/Notes × build/ingest/manage role and packages no runtime. |
+| taxonomy-sc009 | All seven skills disable implicit invocation; generic note, KB, and coding requests are insufficient triggers. |
+
+| Notes 2 scenario | Frozen semantic |
+|---|---|
+| notes-sc001 | Every Bundle contains exactly canonical Note 1, Tag 2, and Layout 1 profiles; Note 1 bytes are identical. |
+| notes-sc002 | Legacy `bundle.json`, extra profile keys, executable policy fields, and unsupported policies reject without fallback. |
+| notes-sc003 | Validated profiles, not Bundle ids, dispatch date, safe-tag, and Git-admission behavior. |
+| notes-sc004 | Aggregate and per-profile show/validate routes agree; Note and Layout profiles are immutable. |
+| notes-sc005 | Whole Tag 2 candidates permit description edits and ordered append while rejecting contraction, rename, movement, irrelevant groups, unsafe names, and case/NFKC collisions. |
+| notes-sc006 | Stable-root-lock expansion validates admission first, publishes canonical skeletons in tag order, and replaces Tag 2 last. |
+| notes-sc007 | First failure stops without rollback and deterministically reports completed steps, failed step, residual partitions, and profile update state. |
+| notes-sc008 | Only candidate-named canonical empty residue is resumable; retry is idempotent and normal operations report residue. |
+| notes-sc009 | Daily add derives one `+08:00` timestamp, rejects a conflicting partition, creates one locked skeleton, and atomically publishes the note without profile changes. |
+| notes-sc010 | Tools root is required only for tools initialization, tools tag append, and Git-admission note add; stale configured tools remain manageable. |
+| notes-sc011 | Component, containment, exact-case repository, wrong-node, link, junction, reparse, reservation, and same-directory-temp boundaries fail closed. |
+| notes-sc012 | Add/show/list/edit/archive/confirmed-delete metadata and digest lifecycle remains unchanged across all three layout fixtures. |
+| notes-sc013 | Three deterministic Notes 2 wheels/manifests are byte-identical and the router is excluded from runtime packaging. |
+| notes-sc014 | The isolated Notes state contains nine canonical profile files, no legacy bundle files, preserved markers/Registry/lock, and zero note units. |

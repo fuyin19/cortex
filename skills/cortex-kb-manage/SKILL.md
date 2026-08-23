@@ -1,9 +1,11 @@
 ---
 name: cortex-kb-manage
-description: Read and validate Cortex 7.0 state and show, edit, or delete one exact partitioned record.
+description: Explicit invocation only for reading Cortex 7.0 state or showing, editing, and deleting one exact partitioned record.
 ---
 
 # Cortex KB manage
+
+Use this role only when the user explicitly names `cortex-kb-manage`, or explicitly invokes `cortex` and the router selects KB manage. Generic note, KB, or coding requests are insufficient triggers.
 
 Use this skill for `registry.show`, `registry.validate`, `registry.resolve`, `manage.status`, `manage.validate`, `manage.config.show`, and exact `record.show`, `record.edit`, or `record.delete`. Never invoke `manage.init`, `manage.config.set`, `registry.set`, `record.add`, or the batch helper. The embedded runtime remains the complete closed Cortex 7 CLI; these ownership boundaries are this skill's contract, not runtime route removal.
 

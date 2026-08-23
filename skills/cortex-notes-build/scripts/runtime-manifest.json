@@ -1,1 +1,1 @@
-{"distribution":"cortex-notes","import":"cortex_notes","isolation":"-I","python":"3.11","schema_version":1,"version":"1.0.0","wheel":"cortex_notes-1.0.0-py3-none-any.whl","wheel_sha256":"724523508246eef977b571b76753df71fe88848f9102f9fa0e159611105c1c04"}
+{"distribution":"cortex-notes","import":"cortex_notes","isolation":"-I","python":"3.11","schema_version":1,"version":"2.0.0","wheel":"cortex_notes-2.0.0-py3-none-any.whl","wheel_sha256":"6b6bdeb375f27c19d399ce2edcce33f39c0726223118bb61bf126ae253c839c5"}
