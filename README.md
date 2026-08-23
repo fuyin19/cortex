@@ -14,7 +14,17 @@ export CORTEX_PYTHON=/absolute/path/to/python3.11
 
 `CORTEX_PYTHON` is mandatory and must name the same ordinary, non-reparse Python 3.11/UCD 14 executable that runs the skill-local launcher. Windows may invoke the byte-identical `scripts\run_cortex.cmd` convenience launcher after setting the same absolute variable. There is no PATH, install, network, or alternate-runtime fallback. Human stdout/stderr is UTF-8; `--json` retains the existing compact ASCII-escaped Result encoding.
 
-`cortex-build` alone also carries `scripts/batch_record_add.py`, a sequential wrapper around the same verified `record add` route. It accepts exact v1 jobs from `--job <path|->` (stdin is preferred), validates every item before the first runner call, continues after valid non-ok Results, creates no persistent job state, and is not a core/public route.
+The canonical skill taxonomy separates responsibilities without changing the CLI:
+
+- `cortex-kb-ingest` owns `record.add` and the exact-v1 sequential batch wrapper only.
+- `cortex-kb-build` owns `manage.init`, `manage.config.set`, and `registry.set` only. It requires one explicit active build session and keyed-monotonic profile/Registry expansion.
+- `cortex-kb-manage` owns reads and validation plus exact `record.show`, `record.edit`, and `record.delete` only.
+
+Every skill embeds the same complete offline Cortex 7 runtime; ownership is enforced by the skill contract, not by removing CLI routes. `cortex-build` remains an explicit-only deprecated compatibility alias for `cortex-kb-ingest`, and `cortex-manage` remains an explicit-only deprecated compatibility alias for `cortex-kb-manage`. New work uses the canonical names.
+
+Only `cortex-kb-ingest` and its `cortex-build` compatibility alias carry `scripts/batch_record_add.py`. The helper is a sequential wrapper around the same verified `record add` route. It accepts exact v1 jobs from `--job <path|->` (stdin is preferred), validates every item before the first runner call, continues after valid non-ok Results, creates no persistent job state, and is not a core/public route.
+
+`cortex-kb-build` classifies one explicit target as new, resumed empty configured, resumed empty null-sentinel, or populated. It rejects contraction before writing: Tag groups/tags and membership, Registry id-to-path mappings, configured layout strategies/group, and populated profile bytes are retained. A configured maximum increase writes Layout before Tags; a null-sentinel transition always writes Tags before Layout. Execution stops at the first non-ok result without rollback and reports completed steps, the failed step, residue/orphan state, and the unchanged core Result.
 
 Show/delete authorization uses `CORTEX_UNIT_TREE_V2`, which binds partition then unit before the no-follow manifest. Deleting the last unit removes its partition. Registered mutations and authorization share the stable root lock; standalone operations use the Record Profile byte lock.
 

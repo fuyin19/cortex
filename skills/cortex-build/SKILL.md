@@ -1,6 +1,7 @@
 ---
 name: cortex-build
-description: Add a source and optional canonical conversion to an explicitly selected Cortex 7.0 Bundle.
+description: Deprecated compatibility alias for exact Cortex ingestion; invoke explicitly only and use cortex-kb-ingest for new work.
+disable-model-invocation: true
 ---
 
 # Cortex build

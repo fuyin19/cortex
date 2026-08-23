@@ -1,7 +1,7 @@
 {
   "name": "cortex",
-  "version": "5.1.0",
-  "description": "Minimal single-writer record knowledge base with build and management skills.",
+  "version": "7.0.0",
+  "description": "Cortex 7 knowledge base with three canonical skills and two explicit-only compatibility skills.",
   "author": {
     "name": "fuyin"
   }

@@ -31,8 +31,8 @@
 | sc027 | Markdown-only units preserve exact bytes and relative paths. |
 | sc028 | No installed/public migration or cutover route exists. |
 | sc029 | ibd-projects gates 30 partitions, 395 total, 25 full, 370 Markdown-only. |
-| sc030 | Both skills carry one pinned, byte-identical Cortex 7.0.0 runtime. |
-| sc031 | Implementation, AGENTS, docs, skills, and capability fixture agree. |
+| sc030 | All five skills carry one pinned, byte-identical Cortex 7.0.0 runtime; only the two ingest names carry the helper. |
+| sc031 | Implementation, AGENTS, docs, canonical/compatibility skills, invocation metadata, and capability fixture agree. |
 | sc032 | Full pytest, external-cache compileall, package, and runtime check pass. |
 | sc033 | Candidate/staging under the actual Cortex repo, validated KB root, or derived KB repo, plus false/omitted boundary operands and wrong-volume staging, reject before output. |
 | sc034 | The repository contains exactly one noninstalled migration utility and it exposes deterministic Layout3-to-Layout4 plan/build only, with no cutover function, subcommand, or product route. |
@@ -41,8 +41,8 @@ Repository boundary vocabulary: candidate under KB root; candidate under source 
 
 | Runtime scenario | Frozen semantic |
 |---|---|
-| runtime-sc001 | Each complete skill copy runs Cortex 7.0.0 independently. |
-| runtime-sc002 | Both skills carry byte-identical runner, manifest, and wheel payloads. |
+| runtime-sc001 | Each of five complete skill copies runs Cortex 7.0.0 independently. |
+| runtime-sc002 | All five skills carry byte-identical runner, manifest, and wheel payloads. |
 | runtime-sc003 | PATH Cortex 4 sentinels are never invoked. |
 | runtime-sc004 | Hostile PYTHONPATH and ambient Cortex modules are ignored by isolated launch. |
 | runtime-sc005 | Runtime launch performs no child install, network, cache, or update action. |
@@ -52,10 +52,20 @@ Repository boundary vocabulary: candidate under KB root; candidate under source 
 | runtime-sc009 | The embedded wheel has exact Cortex metadata, no dependencies, and no console script. |
 | runtime-sc010 | A disposable wheel projection creates no command launcher. |
 | runtime-sc011 | The Cortex 7 public routes, package version, and source CLI contract remain closed. |
-| runtime-sc012 | Source and both bundled runtimes produce equal Results and disposable Bundle trees. |
+| runtime-sc012 | Source and all five bundled runtimes produce equal Results and disposable Bundle trees. |
 | runtime-sc013 | Skills, documentation, capability fixture, and runtime scenario mapping agree. |
 | runtime-sc014 | CORTEX_PYTHON binds the exact Python 3.11/UCD 14 executable before dispatch; missing, relative, Python 3.12, and wrong-file values fail before mutation. |
 | runtime-sc015 | Human stdout and stderr are UTF-8 while compact JSON Result bytes retain ASCII escaping and shape. |
-| runtime-sc016 | The build-only batch helper accepts full and Markdown-only items and returns one ordered wrapper summary. |
-| runtime-sc017 | A valid middle Cortex failure is collected and later batch items continue sequentially. |
-| runtime-sc018 | Malformed jobs, duplicate ids, and relative item paths reject before any runner call or Bundle mutation. |
+| runtime-sc016 | Both ingest names carry an identical helper that accepts full and Markdown-only items and returns one ordered wrapper summary; the other three have none. |
+| runtime-sc017 | Both ingest helpers collect a valid middle Cortex failure and continue later batch items sequentially. |
+| runtime-sc018 | Both ingest helpers reject malformed jobs, duplicate ids, and relative item paths before any runner call or Bundle mutation. |
+
+| Taxonomy scenario | Frozen semantic |
+|---|---|
+| taxonomy-sc001 | Canonical discovery exposes ingest, build, and manage with disjoint exact write ownership. |
+| taxonomy-sc002 | Both legacy aliases are deprecated explicit-only in frontmatter and agent policy and map to frozen replacements. |
+| taxonomy-sc003 | Build requires one explicit active session and full operands for new or resumed targets. |
+| taxonomy-sc004 | Build candidates retain keyed Tags/membership and Registry id-to-path mappings and reject contraction prewrite. |
+| taxonomy-sc005 | Populated bytes freeze; configured maximum expansion is Layout-before-Tags; null sentinel is Tags-before-Layout. |
+| taxonomy-sc006 | First failure stops later mutation and reports completed_steps, failed_step, residual_path, orphan, and the core Result. |
+| taxonomy-sc007 | Core routes, profiles, version, source tree, package metadata, migration utility, and legacy operational bodies remain unchanged. |

@@ -1,6 +1,7 @@
 ---
 name: cortex-manage
-description: Inspect and manage Cortex 7.0 Bundles, profiles, exact partitioned records, and registries through the closed CLI.
+description: Deprecated compatibility alias for Cortex management; invoke explicitly only and use cortex-kb-manage for new work.
+disable-model-invocation: true
 ---
 
 # Cortex manage

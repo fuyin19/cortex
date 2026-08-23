@@ -1,0 +1,5 @@
+interface:
+  display_name: "Cortex Build (Deprecated)"
+  short_description: "Explicit-only compatibility alias; use cortex-kb-ingest."
+policy:
+  allow_implicit_invocation: false

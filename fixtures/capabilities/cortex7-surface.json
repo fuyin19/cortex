@@ -13,6 +13,27 @@
   "public_migration_route": false,
   "agent_entrypoint": "CORTEX_PYTHON absolute-python-3.11-ucd14 -I skill-local-runner",
   "global_command": false,
-  "skill_runtime": {"artifact": "cortex_record_kb-7.0.0-py3-none-any.whl", "offline": true, "independently_complete": true, "payloads_byte_identical": true, "required_environment": "CORTEX_PYTHON", "human_stream_encoding": "utf-8", "json_ascii_escaping": true, "windows_launcher": "run_cortex.cmd"},
-  "batch_helper": {"skill": "cortex-build", "script": "batch_record_add.py", "schema_version": 1, "command": "record.add.batch", "core_route": false, "sequential": true, "rollback": false}
+  "skill_taxonomy": {
+    "canonical": ["cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage"],
+    "write_owners": {
+      "manage.init": "cortex-kb-build",
+      "manage.config.set": "cortex-kb-build",
+      "registry.set": "cortex-kb-build",
+      "record.add": "cortex-kb-ingest",
+      "record.edit": "cortex-kb-manage",
+      "record.delete": "cortex-kb-manage"
+    },
+    "read_owner": "cortex-kb-manage",
+    "aliases": {"cortex-build": "cortex-kb-ingest", "cortex-manage": "cortex-kb-manage"},
+    "invocation_policy": {
+      "cortex-kb-ingest": "implicit-allowed",
+      "cortex-kb-build": "implicit-allowed",
+      "cortex-kb-manage": "implicit-allowed",
+      "cortex-build": "explicit-only",
+      "cortex-manage": "explicit-only"
+    },
+    "enforcement": "skill-contract-only"
+  },
+  "skill_runtime": {"skills": ["cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage", "cortex-build", "cortex-manage"], "artifact": "cortex_record_kb-7.0.0-py3-none-any.whl", "offline": true, "independently_complete": true, "payloads_byte_identical": true, "required_environment": "CORTEX_PYTHON", "human_stream_encoding": "utf-8", "json_ascii_escaping": true, "windows_launcher": "run_cortex.cmd"},
+  "batch_helper": {"skills": ["cortex-kb-ingest", "cortex-build"], "script": "batch_record_add.py", "schema_version": 1, "command": "record.add.batch", "core_route": false, "sequential": true, "rollback": false}
 }

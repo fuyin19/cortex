@@ -1,0 +1,5 @@
+interface:
+  display_name: "Cortex Manage (Deprecated)"
+  short_description: "Explicit-only compatibility alias; use cortex-kb-manage."
+policy:
+  allow_implicit_invocation: false

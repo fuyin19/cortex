@@ -1,0 +1,37 @@
+---
+name: cortex-kb-manage
+description: Read and validate Cortex 7.0 state and show, edit, or delete one exact partitioned record.
+---
+
+# Cortex KB manage
+
+Use this skill for `registry.show`, `registry.validate`, `registry.resolve`, `manage.status`, `manage.validate`, `manage.config.show`, and exact `record.show`, `record.edit`, or `record.delete`. Never invoke `manage.init`, `manage.config.set`, `registry.set`, `record.add`, or the batch helper. The embedded runtime remains the complete closed Cortex 7 CLI; these ownership boundaries are this skill's contract, not runtime route removal.
+
+## Verified offline runtime
+
+Set `CORTEX_PYTHON` to the lexical absolute path of the intended Python 3.11/UCD 14 executable. The launcher verifies that path is an ordinary non-reparse file reached through ordinary non-reparse ancestors and is the same filesystem entry as `sys.executable`. On POSIX invoke `"$CORTEX_PYTHON" -I <ABSOLUTE-SKILL>/scripts/run_cortex.py`; on Windows use the identical convenience launcher `<ABSOLUTE-SKILL>\scripts\run_cortex.cmd`. First require `--version` to emit exactly `cortex 7.0.0` on stdout and empty stderr. Do not use PATH or fall back to a global command, ambient package, installation, sibling skill, network, or update.
+
+Require an explicit selector on every operation: `--kb-root` alone for Registry reads; explicit `--workspace`, or explicit `--kb-root` plus `--bundle-id`, for Bundle reads and exact record operations. Never discover or infer a Bundle.
+
+Owned read and validation forms include:
+
+```text
+... --json --kb-root <root> registry show
+... --json --kb-root <root> registry validate
+... --json --kb-root <root> registry resolve --bundle-id <id>
+... --json --workspace <bundle> manage status
+... --json --workspace <bundle> manage validate
+... --json --workspace <bundle> manage config show --profile <record|tags|layout>
+```
+
+Record edit/show/delete require separate exact safe components:
+
+```text
+... --json --workspace <bundle> record edit --partition <exact-tag> --record <exact-unit> --metadata <json>
+... --json --workspace <bundle> record show --partition <exact-tag> --record <exact-unit>
+... --json --workspace <bundle> record delete --partition <exact-tag> --record <exact-unit> --expected-tree-sha256 <lowercase64>
+```
+
+Treat `tree_sha256` as the V2 authorization token binding partition then unit. Never reuse a stale token. Before edit, supply complete metadata and retain title, timestamp, and the selected partition tag exactly; only nonpartition tag membership may change. Delete may remove the partition when its last unit is deleted. Report the core Result honestly, including partial-delete residue.
+
+Do not rename, move, add, batch, search, auto-tag, trash, tombstone, initialize, configure, register, repair, migrate, or cut over. The repository-only Layout3→4 utility is not a skill/public capability.

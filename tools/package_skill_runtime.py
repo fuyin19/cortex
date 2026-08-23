@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the deterministic, offline Cortex runtime embedded in both skills."""
+"""Build the deterministic, offline Cortex runtime embedded in repository skills."""
 
 from __future__ import annotations
 
@@ -9,8 +9,10 @@ import csv
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import re
+import stat
 import tempfile
 import tomllib
 import zipfile
@@ -21,7 +23,14 @@ DISTRIBUTION = "cortex-record-kb"
 IMPORT_NAME = "cortex"
 WHEEL_NAME = "cortex_record_kb-7.0.0-py3-none-any.whl"
 DIST_INFO = "cortex_record_kb-7.0.0.dist-info"
-SKILLS = ("cortex-build", "cortex-manage")
+RUNTIME_SKILLS = (
+    "cortex-kb-ingest",
+    "cortex-kb-build",
+    "cortex-kb-manage",
+    "cortex-build",
+    "cortex-manage",
+)
+BATCH_SKILLS = ("cortex-kb-ingest", "cortex-build")
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
 
@@ -524,26 +533,78 @@ def _expected_payload(root: Path) -> dict[str, bytes]:
     }
 
 
+def _is_reparse(result: os.stat_result) -> bool:
+    attributes = getattr(result, "st_file_attributes", 0)
+    marker = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attributes & marker)
+
+
+def _ordinary(path: Path, *, directory: bool) -> bool:
+    try:
+        result = path.lstat()
+    except FileNotFoundError:
+        return False
+    if stat.S_ISLNK(result.st_mode) or _is_reparse(result):
+        raise RuntimeError(f"linked runtime path is forbidden: {path}")
+    expected = stat.S_ISDIR(result.st_mode) if directory else stat.S_ISREG(result.st_mode)
+    if not expected:
+        raise RuntimeError(f"nonordinary runtime path is forbidden: {path}")
+    return True
+
+
+def _prepare_skill(root: Path, skill_name: str, expected: dict[str, bytes]) -> Path:
+    skill = root / "skills" / skill_name
+    if not _ordinary(skill, directory=True):
+        raise RuntimeError(f"missing skill directory: {skill_name}")
+    scripts = skill / "scripts"
+    if scripts.exists() or scripts.is_symlink():
+        _ordinary(scripts, directory=True)
+    else:
+        scripts.mkdir()
+    vendor = scripts / "vendor"
+    if vendor.exists() or vendor.is_symlink():
+        _ordinary(vendor, directory=True)
+    else:
+        vendor.mkdir()
+
+    allowed_files = {Path(relative).as_posix() for relative in expected}
+    allowed_files.add("scripts/batch_record_add.py")
+    allowed_directories = {"scripts", "scripts/vendor"}
+    for path in sorted(scripts.rglob("*"), key=lambda value: value.as_posix().encode("utf-8")):
+        relative = path.relative_to(skill).as_posix()
+        result = path.lstat()
+        if stat.S_ISLNK(result.st_mode) or _is_reparse(result):
+            raise RuntimeError(f"linked runtime artifact is forbidden: {skill_name}/{relative}")
+        if stat.S_ISDIR(result.st_mode):
+            if relative not in allowed_directories:
+                raise RuntimeError(f"unexpected runtime directory: {skill_name}/{relative}")
+        elif stat.S_ISREG(result.st_mode):
+            if relative not in allowed_files:
+                raise RuntimeError(f"unexpected runtime artifact: {skill_name}/{relative}")
+        else:
+            raise RuntimeError(f"nonordinary runtime artifact is forbidden: {skill_name}/{relative}")
+    return skill
+
+
 def _install_payload(root: Path, expected: dict[str, bytes]) -> None:
-    for skill_name in SKILLS:
-        skill = root / "skills" / skill_name
-        vendor = skill / "scripts" / "vendor"
-        vendor.mkdir(parents=True, exist_ok=True)
-        for stale in vendor.glob("*.whl"):
-            if stale.name != WHEEL_NAME:
-                stale.unlink()
+    prepared = [(skill_name, _prepare_skill(root, skill_name, expected)) for skill_name in RUNTIME_SKILLS]
+    for skill_name, skill in prepared:
         for relative, raw in expected.items():
             destination = skill / Path(relative)
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(raw)
-    batch = root / "skills" / "cortex-build" / "scripts" / "batch_record_add.py"
-    batch.write_bytes(_batch_helper_bytes())
+        batch = skill / "scripts" / "batch_record_add.py"
+        if skill_name in BATCH_SKILLS:
+            batch.write_bytes(_batch_helper_bytes())
+        elif batch.exists() or batch.is_symlink():
+            _ordinary(batch, directory=False)
+            batch.unlink()
 
 
 def _check_payload(root: Path, expected: dict[str, bytes]) -> None:
     observed: list[dict[str, bytes]] = []
-    for skill_name in SKILLS:
-        skill = root / "skills" / skill_name
+    for skill_name in RUNTIME_SKILLS:
+        skill = _prepare_skill(root, skill_name, expected)
         actual: dict[str, bytes] = {}
         for relative, raw in expected.items():
             path = skill / Path(relative)
@@ -554,14 +615,16 @@ def _check_payload(root: Path, expected: dict[str, bytes]) -> None:
         if [item.name for item in wheels] != [WHEEL_NAME]:
             raise RuntimeError(f"unexpected skill runtime artifact: {skill_name}")
         observed.append(actual)
-    if observed[0] != observed[1]:
+    if any(payload != observed[0] for payload in observed[1:]):
         raise RuntimeError("skill runtime payloads are not byte-identical")
-    build_batch = root / "skills" / "cortex-build" / "scripts" / "batch_record_add.py"
-    manage_batch = root / "skills" / "cortex-manage" / "scripts" / "batch_record_add.py"
-    if not build_batch.is_file() or build_batch.is_symlink() or build_batch.read_bytes() != _batch_helper_bytes():
-        raise RuntimeError("cortex-build batch helper drift")
-    if manage_batch.exists() or manage_batch.is_symlink():
-        raise RuntimeError("batch helper is forbidden in cortex-manage")
+    expected_batch = _batch_helper_bytes()
+    for skill_name in RUNTIME_SKILLS:
+        batch = root / "skills" / skill_name / "scripts" / "batch_record_add.py"
+        if skill_name in BATCH_SKILLS:
+            if not _ordinary(batch, directory=False) or batch.read_bytes() != expected_batch:
+                raise RuntimeError(f"batch helper drift: {skill_name}")
+        elif batch.exists() or batch.is_symlink():
+            raise RuntimeError(f"batch helper is forbidden in {skill_name}")
 
 
 def main() -> int:
