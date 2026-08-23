@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -9,7 +8,7 @@ from cortex.constants import PUBLIC_ROUTES, VERSION
 
 ROOT = Path(__file__).parents[1]
 CANONICAL = ("cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage")
-RUNTIMES = (*CANONICAL, "cortex-build", "cortex-manage")
+RUNTIMES = CANONICAL
 WRITE_OWNERS = {
     "manage.init": "cortex-kb-build",
     "manage.config.set": "cortex-kb-build",
@@ -17,10 +16,6 @@ WRITE_OWNERS = {
     "record.add": "cortex-kb-ingest",
     "record.edit": "cortex-kb-manage",
     "record.delete": "cortex-kb-manage",
-}
-LEGACY_BODY_SHA256 = {
-    "cortex-build": "57e64ad3648aa86aa03ca87d25812b0703e240307ff02bcf577babc21e0d59d9",
-    "cortex-manage": "04055c6cd5a598a40d8c11ebdd292112b4764de3f4c82449736216c642eaf346",
 }
 
 
@@ -36,10 +31,6 @@ def _frontmatter(text: str) -> dict[str, str]:
         key, value = line.split(":", 1)
         result[key.strip()] = value.strip()
     return result
-
-
-def _body_bytes(name: str) -> bytes:
-    return (ROOT / "skills" / name / "SKILL.md").read_bytes().split(b"---", 2)[2]
 
 
 def test_taxonomy_sc001_canonical_discovery_and_exact_role_matrix() -> None:
@@ -66,19 +57,11 @@ def test_taxonomy_sc001_canonical_discovery_and_exact_role_matrix() -> None:
         assert forbidden in manage
 
 
-def test_taxonomy_sc002_legacy_aliases_are_dual_explicit_only_and_frozen() -> None:
-    expected = {"cortex-build": "cortex-kb-ingest", "cortex-manage": "cortex-kb-manage"}
+def test_taxonomy_sc002_legacy_aliases_are_removed() -> None:
     fixture = json.loads((ROOT / "fixtures" / "capabilities" / "cortex7-surface.json").read_text("utf-8"))
-    assert fixture["skill_taxonomy"]["aliases"] == expected
-    for name, replacement in expected.items():
-        metadata = _frontmatter(_skill(name))
-        assert metadata["disable-model-invocation"] == "true"
-        assert "Deprecated" in metadata["description"] and "invoke explicitly only" in metadata["description"]
-        assert replacement in metadata["description"]
-        agent_policy = (ROOT / "skills" / name / "agents" / "openai.yaml").read_text("utf-8")
-        assert "allow_implicit_invocation: false" in agent_policy
-        assert replacement in agent_policy
-        assert fixture["skill_taxonomy"]["invocation_policy"][name] == "explicit-only"
+    assert fixture["skill_taxonomy"]["aliases"] == {}
+    assert not (ROOT / "skills" / "cortex-build").exists()
+    assert not (ROOT / "skills" / "cortex-manage").exists()
 
 
 def test_taxonomy_sc003_build_has_one_explicit_new_or_resumed_session() -> None:
@@ -126,7 +109,7 @@ def test_taxonomy_sc006_first_failure_stops_and_reports_late_residue() -> None:
     assert "late `registry.set` failure" in build and "never delete it" in build
 
 
-def test_taxonomy_sc007_core_runtime_and_legacy_bodies_are_invariant() -> None:
+def test_taxonomy_sc007_core_runtime_is_invariant_and_plugin_is_v8() -> None:
     assert VERSION == "7.0.0"
     assert tuple(PUBLIC_ROUTES) == (
         "registry.show", "registry.validate", "registry.resolve", "registry.set",
@@ -136,18 +119,16 @@ def test_taxonomy_sc007_core_runtime_and_legacy_bodies_are_invariant() -> None:
     package = json.loads((ROOT / "package.json").read_text("utf-8"))
     plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text("utf-8"))
     assert package == {"name": "cortex-record-kb", "version": "7.0.0", "description": "Minimal single-writer record knowledge base."}
-    assert plugin["version"] == "7.0.0" and "three canonical skills" in plugin["description"]
+    assert plugin["version"] == "8.0.0" and "three canonical KB skills" in plugin["description"]
     assert (ROOT / "tools" / "migrate_legacy_layout3.py").is_file()
-    for name, digest in LEGACY_BODY_SHA256.items():
-        assert hashlib.sha256(_body_bytes(name)).hexdigest() == digest
 
 
 def test_taxonomy_runtime_and_batch_owner_lists_are_ordered_and_exact() -> None:
     fixture = json.loads((ROOT / "fixtures" / "capabilities" / "cortex7-surface.json").read_text("utf-8"))
     tool = (ROOT / "tools" / "package_skill_runtime.py").read_text("utf-8")
     assert fixture["skill_runtime"]["skills"] == list(RUNTIMES)
-    assert fixture["batch_helper"]["skills"] == ["cortex-kb-ingest", "cortex-build"]
-    assert "RUNTIME_SKILLS = (" in tool and "BATCH_SKILLS = (\"cortex-kb-ingest\", \"cortex-build\")" in tool
+    assert fixture["batch_helper"]["skills"] == ["cortex-kb-ingest"]
+    assert "RUNTIME_SKILLS = (" in tool and "BATCH_SKILLS = (\"cortex-kb-ingest\",)" in tool
     helpers = {name: (ROOT / "skills" / name / "scripts" / "batch_record_add.py") for name in RUNTIMES}
-    assert helpers["cortex-kb-ingest"].read_bytes() == helpers["cortex-build"].read_bytes()
-    assert all(not path.exists() for name, path in helpers.items() if name not in {"cortex-kb-ingest", "cortex-build"})
+    assert helpers["cortex-kb-ingest"].is_file()
+    assert all(not path.exists() for name, path in helpers.items() if name != "cortex-kb-ingest")

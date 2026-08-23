@@ -20,9 +20,11 @@ The canonical skill taxonomy separates responsibilities without changing the CLI
 - `cortex-kb-build` owns `manage.init`, `manage.config.set`, and `registry.set` only. It requires one explicit active build session and keyed-monotonic profile/Registry expansion.
 - `cortex-kb-manage` owns reads and validation plus exact `record.show`, `record.edit`, and `record.delete` only.
 
-Every skill embeds the same complete offline Cortex 7 runtime; ownership is enforced by the skill contract, not by removing CLI routes. `cortex-build` remains an explicit-only deprecated compatibility alias for `cortex-kb-ingest`, and `cortex-manage` remains an explicit-only deprecated compatibility alias for `cortex-kb-manage`. New work uses the canonical names.
+Every canonical KB skill embeds the same complete offline Cortex 7 runtime; ownership is enforced by the skill contract, not by removing CLI routes.
 
-Only `cortex-kb-ingest` and its `cortex-build` compatibility alias carry `scripts/batch_record_add.py`. The helper is a sequential wrapper around the same verified `record add` route. It accepts exact v1 jobs from `--job <path|->` (stdin is preferred), validates every item before the first runner call, continues after valid non-ok Results, creates no persistent job state, and is not a core/public route.
+Only `cortex-kb-ingest` carries `scripts/batch_record_add.py`. The helper is a sequential wrapper around the same verified `record add` route. It accepts exact v1 jobs from `--job <path|->` (stdin is preferred), validates every item before the first runner call, continues after valid non-ok Results, creates no persistent job state, and is not a core/public route.
+
+Cortex Notes 1.0 is a separate, dependency-free runtime in this repository. Its canonical skills are `cortex-notes-ingest`, `cortex-notes-build`, and `cortex-notes-manage`; each embeds one identical offline runtime. Notes keeps Markdown and strict `note.json` metadata as its complete source of truth and has no database, index, search service, UI, network, synchronization, move, restore, or trash layer. See `docs/notes-architecture.md`.
 
 `cortex-kb-build` classifies one explicit target as new, resumed empty configured, resumed empty null-sentinel, or populated. It rejects contraction before writing: Tag groups/tags and membership, Registry id-to-path mappings, configured layout strategies/group, and populated profile bytes are retained. A configured maximum increase writes Layout before Tags; a null-sentinel transition always writes Tags before Layout. Execution stops at the first non-ok result without rollback and reports completed steps, the failed step, residue/orphan state, and the unchanged core Result.
 

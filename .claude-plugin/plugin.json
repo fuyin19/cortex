@@ -1,7 +1,7 @@
 {
   "name": "cortex",
-  "version": "7.0.0",
-  "description": "Cortex 7 knowledge base with three canonical skills and two explicit-only compatibility skills.",
+  "version": "8.0.0",
+  "description": "Cortex with three canonical KB skills and three canonical Notes skills.",
   "author": {
     "name": "fuyin"
   }

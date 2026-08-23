@@ -169,8 +169,8 @@ def test_sc_030_static_contract_has_no_product_migration_or_extra_state(tmp_path
     assert (root / "skills" / "cortex-kb-ingest" / "SKILL.md").is_file()
     assert (root / "skills" / "cortex-kb-build" / "SKILL.md").is_file()
     assert (root / "skills" / "cortex-kb-manage" / "SKILL.md").is_file()
-    assert (root / "skills" / "cortex-build" / "SKILL.md").is_file()
-    assert (root / "skills" / "cortex-manage" / "SKILL.md").is_file()
+    assert not (root / "skills" / "cortex-build").exists()
+    assert not (root / "skills" / "cortex-manage").exists()
 
 
 def test_sc_031_registry_requires_its_stable_zero_byte_lock(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

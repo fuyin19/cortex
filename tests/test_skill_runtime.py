@@ -17,9 +17,9 @@ from cortex.constants import PUBLIC_ROUTES, VERSION
 
 ROOT = Path(__file__).parents[1]
 SKILL_NAMES = (
-    "cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage", "cortex-build", "cortex-manage",
+    "cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage",
 )
-BATCH_SKILL_NAMES = ("cortex-kb-ingest", "cortex-build")
+BATCH_SKILL_NAMES = ("cortex-kb-ingest",)
 NON_BATCH_SKILL_NAMES = tuple(name for name in SKILL_NAMES if name not in BATCH_SKILL_NAMES)
 WHEEL_NAME = "cortex_record_kb-7.0.0-py3-none-any.whl"
 PAYLOAD_PATHS = (
@@ -29,8 +29,8 @@ PAYLOAD_PATHS = (
     Path("scripts/vendor") / WHEEL_NAME,
 )
 RUNTIME_SCENARIOS = {
-    "runtime-sc001": "Each of five complete skill copies runs Cortex 7.0.0 independently.",
-    "runtime-sc002": "All five skills carry byte-identical runner, manifest, and wheel payloads.",
+    "runtime-sc001": "Each of three complete KB skill copies runs Cortex 7.0.0 independently.",
+    "runtime-sc002": "All three KB skills carry byte-identical runner, manifest, and wheel payloads.",
     "runtime-sc003": "PATH Cortex 4 sentinels are never invoked.",
     "runtime-sc004": "Hostile PYTHONPATH and ambient Cortex modules are ignored by isolated launch.",
     "runtime-sc005": "Runtime launch performs no child install, network, cache, or update action.",
@@ -40,13 +40,13 @@ RUNTIME_SCENARIOS = {
     "runtime-sc009": "The embedded wheel has exact Cortex metadata, no dependencies, and no console script.",
     "runtime-sc010": "A disposable wheel projection creates no command launcher.",
     "runtime-sc011": "The Cortex 7 public routes, package version, and source CLI contract remain closed.",
-    "runtime-sc012": "Source and all five bundled runtimes produce equal Results and disposable Bundle trees.",
+    "runtime-sc012": "Source and all three bundled KB runtimes produce equal Results and disposable Bundle trees.",
     "runtime-sc013": "Skills, documentation, capability fixture, and runtime scenario mapping agree.",
     "runtime-sc014": "CORTEX_PYTHON binds the exact Python 3.11/UCD 14 executable before dispatch; missing, relative, Python 3.12, and wrong-file values fail before mutation.",
     "runtime-sc015": "Human stdout and stderr are UTF-8 while compact JSON Result bytes retain ASCII escaping and shape.",
-    "runtime-sc016": "Both ingest names carry an identical helper that accepts full and Markdown-only items and returns one ordered wrapper summary; the other three have none.",
-    "runtime-sc017": "Both ingest helpers collect a valid middle Cortex failure and continue later batch items sequentially.",
-    "runtime-sc018": "Both ingest helpers reject malformed jobs, duplicate ids, and relative item paths before any runner call or Bundle mutation.",
+    "runtime-sc016": "The ingest skill helper accepts full and Markdown-only items and returns one ordered wrapper summary; manage and build have none.",
+    "runtime-sc017": "The ingest helper collects a valid middle Cortex failure and continues later batch items sequentially.",
+    "runtime-sc018": "The ingest helper rejects malformed jobs, duplicate ids, and relative item paths before any runner call or Bundle mutation.",
 }
 
 
@@ -507,7 +507,7 @@ def test_runtime_sc015_human_utf8_and_json_ascii_parity(tmp_path: Path) -> None:
 def test_runtime_sc016_ingest_batch_mixes_full_and_markdown(tmp_path: Path, skill_name: str) -> None:
     helpers = [(_skill(name) / "scripts" / "batch_record_add.py") for name in BATCH_SKILL_NAMES]
     assert all(path.is_file() and not path.is_symlink() for path in helpers)
-    assert helpers[0].read_bytes() == helpers[1].read_bytes()
+    assert all(path.read_bytes() == helpers[0].read_bytes() for path in helpers)
     assert all(not (_skill(name) / "scripts" / "batch_record_add.py").exists() for name in NON_BATCH_SKILL_NAMES)
     bundle = _configure_bundle_for_runtime(tmp_path)
     registry = tmp_path / "registry-input.json"

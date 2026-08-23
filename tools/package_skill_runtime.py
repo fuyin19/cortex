@@ -27,10 +27,8 @@ RUNTIME_SKILLS = (
     "cortex-kb-ingest",
     "cortex-kb-build",
     "cortex-kb-manage",
-    "cortex-build",
-    "cortex-manage",
 )
-BATCH_SKILLS = ("cortex-kb-ingest", "cortex-build")
+BATCH_SKILLS = ("cortex-kb-ingest",)
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
 

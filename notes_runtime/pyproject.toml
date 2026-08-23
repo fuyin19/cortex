@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cortex-record-kb"
-version = "7.0.0"
-description = "Minimal single-writer record knowledge base"
+name = "cortex-notes"
+version = "1.0.0"
+description = "Minimal file-native Notes runtime for Cortex"
 requires-python = ">=3.11,<3.12"
 dependencies = []
 
@@ -14,8 +14,3 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.pytest.ini_options]
-addopts = "-q"
-testpaths = ["tests"]
-pythonpath = ["src", "notes_runtime/src"]
