@@ -66,11 +66,12 @@ def _absolute_string(value: object) -> bool:
     return isinstance(value, str) and value != "" and Path(value).is_absolute()
 
 
-def _validate_job(value: object) -> list[dict[str, Any]]:
+def _validate_job(value: object) -> tuple[int, list[dict[str, Any]]]:
     if not isinstance(value, dict) or set(value) != {"version", "items"}:
         raise BatchUsage("job_shape_invalid")
-    if type(value["version"]) is not int or value["version"] != 1:
+    if type(value["version"]) is not int or value["version"] not in {1, 2}:
         raise BatchUsage("job_version_invalid")
+    version = value["version"]
     items = value["items"]
     if not isinstance(items, list):
         raise BatchUsage("job_items_invalid")
@@ -80,13 +81,19 @@ def _validate_job(value: object) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             raise BatchUsage("job_item_invalid")
         keys = set(item)
-        if keys not in ({"id", "source", "metadata"}, {"id", "source", "conversion", "metadata"}):
+        v1_shapes = ({"id", "source", "metadata"}, {"id", "source", "conversion", "metadata"})
+        v2_shapes = (
+            {"id", "source", "metadata"},
+            {"id", "conversion", "metadata"},
+            {"id", "source", "conversion", "metadata"},
+        )
+        if keys not in (v1_shapes if version == 1 else v2_shapes):
             raise BatchUsage("job_item_shape_invalid")
         item_id = item["id"]
         if not isinstance(item_id, str) or item_id == "" or item_id in ids:
             raise BatchUsage("job_item_id_invalid")
         ids.add(item_id)
-        if not _absolute_string(item["source"]):
+        if "source" in item and not _absolute_string(item["source"]):
             raise BatchUsage("job_source_not_absolute")
         if "conversion" in item and not _absolute_string(item["conversion"]):
             raise BatchUsage("job_conversion_not_absolute")
@@ -99,7 +106,7 @@ def _validate_job(value: object) -> list[dict[str, Any]]:
         if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
             raise BatchUsage("job_metadata_value_invalid")
         normalized.append(item)
-    return normalized
+    return version, normalized
 
 
 def _selectors(args: argparse.Namespace) -> list[str]:
@@ -159,11 +166,11 @@ def _write_wrapper(items: list[dict[str, Any]], total: int) -> int:
 def _run(argv: list[str]) -> int:
     args = _parser().parse_args(argv)
     selectors = _selectors(args)
-    items = _validate_job(_read_job(args.job))
+    _job_version, items = _validate_job(_read_job(args.job))
     runner = Path(__file__).absolute().parent / "run_cortex.py"
     base = [sys.executable, "-I", str(runner)]
     preflight = _invoke([*base, "--version"])
-    if preflight.returncode != 0 or preflight.stdout.replace(b"\r\n", b"\n") != b"cortex 7.0.0\n" or preflight.stderr != b"":
+    if preflight.returncode != 0 or preflight.stdout.replace(b"\r\n", b"\n") != b"cortex 8.0.0\n" or preflight.stderr != b"":
         raise BatchUsage("runner_bootstrap_failed")
     results: list[dict[str, Any]] = []
     with tempfile.TemporaryDirectory(prefix="cortex-record-add-batch-") as temporary:
@@ -174,7 +181,9 @@ def _run(argv: list[str]) -> int:
                 json.dumps(item["metadata"], ensure_ascii=False, separators=(",", ":")) + "\n",
                 encoding="utf-8",
             )
-            command = [*base, "--json", *selectors, "record", "add", "--source", item["source"]]
+            command = [*base, "--json", *selectors, "record", "add"]
+            if "source" in item:
+                command.extend(("--source", item["source"]))
             if "conversion" in item:
                 command.extend(("--conversion", item["conversion"]))
             command.extend(("--metadata", str(metadata_path)))

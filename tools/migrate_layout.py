@@ -1,4 +1,4 @@
-"""Noninstalled, nonpublic Layout 3 -> Layout 4 plan/build utility.
+"""Noninstalled, nonpublic Layout 3 -> 4 and Layout 4 -> 5 dispatcher.
 
 The source is read-only. Build writes one absent candidate outside every
 declared repository/KB boundary; this module has no cutover operation.
@@ -14,13 +14,14 @@ if str(_SRC) not in sys.path: sys.path.insert(0, str(_SRC))
 from cortex.constants import RECORD_FIELDS, RECORD_SCHEMA, REGISTRY_FILENAME, ROOT_LOCK_FILENAME, VERSION  # noqa: E402
 from cortex.errors import CortexError, issue, validation_error  # noqa: E402
 from cortex.jsonio import json_bytes, loads_object  # noqa: E402
+from cortex.knowledge_unit import finalize_staged, navigation_bytes  # noqa: E402
 from cortex.naming import require_naming_runtime, tag_title_date_name  # noqa: E402
 from cortex.native import exists, is_reparse_metadata, native_path, reject_reparse_ancestry, rename_no_replace, require_safe_component  # noqa: E402
 from cortex.profiles import registered_tags, tag_groups, validate_record, validate_tags_profile  # noqa: E402
 from cortex.registry import canonical_registry, validate_registry_value  # noqa: E402
 from cortex.validation import validate_workspace  # noqa: E402
 
-if VERSION != "7.0.0": raise RuntimeError(f"Layout migration requires repository Cortex 7.0.0, found {VERSION}")
+if VERSION != "8.0.0": raise RuntimeError(f"Layout migration requires repository Cortex 8.0.0, found {VERSION}")
 LEGACY_KEYS = {"version", "unit_name_tag_group", "unit_name_strategy", "max_component_length", "duplicate_name_strategy"}
 TARGET_KEYS = {"version", "partition_tag_group", "partition_name_strategy", "unit_name_strategy", "max_component_length", "duplicate_name_strategy"}
 
@@ -131,7 +132,7 @@ def _kind(manifest: list[dict[str, Any]]) -> str:
         return "full"
     raise validation_error("Unit is not an exact Layout 3 record unit", "invalid_record_shape")
 
-def plan_bundle(source: Path, target_layout_path: Path) -> tuple[dict[str, Any], bytes, str]:
+def _plan_3_to_4(source: Path, target_layout_path: Path) -> tuple[dict[str, Any], bytes, str]:
     source = Path(os.path.abspath(source)); target_layout_path = Path(os.path.abspath(target_layout_path)); _real_dir(source, "migration_source_invalid")
     profiles = source / "profiles"; problems: list[dict[str, Any]] = []
     try: _real_dir(profiles, "migration_profile_directory_invalid"); profile_names = {entry.name for entry in _children(profiles)}
@@ -199,6 +200,145 @@ def plan_bundle(source: Path, target_layout_path: Path) -> tuple[dict[str, Any],
     body = {"format": "cortex-layout3-to-layout4-plan-v1", "source": str(source), "profiles": {"record": record, "tags": tags, "layout": target}, "profile_sha256": {"record": _sha(record_raw), "tags": _sha(tags_raw), "source_layout": _sha(old_raw), "target_layout": _sha(target_raw)}, "counts": {"partitions": len(counts), "total": len(mappings), "full": sum(x["kind"] == "full" for x in mappings), "markdown_only": sum(x["kind"] == "markdown-only" for x in mappings)}, "partition_counts": [{"partition": name, **counts[name]} for name in sorted(counts)], "mappings": mappings, "issues": problems}
     raw = json_bytes(body); return body, raw, _sha(raw)
 
+def _layout45_problems(source: dict[str, Any], target: dict[str, Any]) -> list[dict[str, Any]]:
+    problems: list[dict[str, Any]] = []
+    if set(source) != TARGET_KEYS or source.get("version") != 4:
+        problems.append(issue("invalid_source_layout", "Source must use exact Layout Profile 4"))
+    if set(target) != TARGET_KEYS or target.get("version") != 5:
+        problems.append(issue("invalid_target_layout", "Target must use exact Layout Profile 5"))
+    if not problems:
+        for key in TARGET_KEYS - {"version"}:
+            if source[key] != target[key]:
+                problems.append(issue("layout_contract_change", "Layout 4 -> 5 may change only the version field", path=f"target-layout#/{key}"))
+    return problems
+
+def _layout4_unit(
+    unit: Path,
+    *,
+    partition: str,
+    tags: dict[str, Any],
+    layout: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    problems: list[dict[str, Any]] = []
+    manifest: list[dict[str, Any]] = []
+    kind: str | None = None
+    try:
+        manifest = _walk(unit)
+        kind = _kind(manifest)
+    except CortexError as exc:
+        problems.extend(exc.details.get("issues", [exc.as_issue()]))
+        return problems, manifest, kind
+    for item in manifest:
+        components = item["path"].split("/")
+        for component in components:
+            folded = component.casefold()
+            if folded in {".claude", ".cursor", "agents.md", "agents.override.md", "claude.md", "claude.local.md", ".cursorrules", ".mcp.json"}:
+                problems.append(issue("instruction_control_path", "Layout 4 source contains a future instruction-control collision", path=f"{partition}/{unit.name}/{item['path']}"))
+    record, raw, read_issues, ok = _guarded_json(unit / "record.json", "invalid_record_metadata")
+    problems.extend(read_issues)
+    if ok:
+        registered = registered_tags(tags)
+        problems.extend(validate_record(record, registered, label=f"{partition}/{unit.name}/record.json"))
+        canonical = {field: record.get(field) for field in RECORD_FIELDS}
+        if raw != json_bytes(canonical):
+            problems.append(issue("noncanonical_record_json", "record.json is not canonical Cortex JSON", path=f"{partition}/{unit.name}/record.json"))
+        groups = tag_groups(tags)
+        selected_group = layout.get("partition_tag_group")
+        choices = {item["tag"] for item in groups.get(selected_group, [])}
+        selected = [tag for tag in record.get("tags", []) if tag in choices]
+        if len(selected) != 1 or selected[0] != partition:
+            problems.append(issue("partition_tag_mismatch", "Record must select exactly its Layout 4 partition tag", path=f"{partition}/{unit.name}"))
+        else:
+            try:
+                expected = tag_title_date_name(partition, record["title"], record["timestamp"], layout["max_component_length"])
+                if expected != unit.name:
+                    problems.append(issue("record_name_mismatch", "Record folder does not match Layout 4 naming", path=f"{partition}/{unit.name}", expected=expected, actual=unit.name))
+            except CortexError as exc:
+                problems.append(exc.as_issue())
+    return problems, manifest, kind
+
+def _plan_4_to_5(source: Path, target_layout_path: Path) -> tuple[dict[str, Any], bytes, str]:
+    source = Path(os.path.abspath(source)); target_layout_path = Path(os.path.abspath(target_layout_path)); _real_dir(source, "migration_source_invalid")
+    profiles = source / "profiles"; problems: list[dict[str, Any]] = []
+    try: _real_dir(profiles, "migration_profile_directory_invalid"); profile_names = {entry.name for entry in _children(profiles)}
+    except CortexError as exc: problems.extend(exc.details.get("issues", [exc.as_issue()])); profile_names = set()
+    record, record_raw, record_issues, record_ok = _guarded_json(profiles / "record-schema.json", "migration_profile_invalid")
+    tags, tags_raw, tag_read_issues, tags_ok = _guarded_json(profiles / "tags.json", "migration_profile_invalid")
+    old, old_raw, old_issues, old_ok = _guarded_json(profiles / "layout.json", "migration_profile_invalid")
+    target, target_raw, target_issues, target_ok = _guarded_json(target_layout_path, "migration_profile_invalid")
+    problems.extend(record_issues + tag_read_issues + old_issues + target_issues)
+    for missing in sorted({"record-schema.json", "tags.json", "layout.json"} - profile_names): problems.append(issue("missing_profile", "Required source profile is missing", path=f"profiles/{missing}"))
+    for extra in sorted(profile_names - {"record-schema.json", "tags.json", "layout.json"}): problems.append(issue("unexpected_profile", "Unexpected source profile entry", path=f"profiles/{extra}"))
+    if record_ok and (record != RECORD_SCHEMA or record_raw != json_bytes(RECORD_SCHEMA)): problems.append(issue("invalid_record_schema", "Source Record Profile 1 must be exact canonical bytes", path="profiles/record-schema.json"))
+    tag_problems = validate_tags_profile(tags) if tags_ok else []
+    problems.extend(tag_problems)
+    if tags_ok and not tag_problems and tags_raw != json_bytes(_canonical_tags(tags)): problems.append(issue("noncanonical_source_profile", "Source Tag Profile 2 JSON is not canonical", path="profiles/tags.json"))
+    layout_problems = _layout45_problems(old, target) if old_ok and target_ok else []
+    problems.extend(layout_problems)
+    if old_ok and old_raw != json_bytes(_canonical_target(old)): problems.append(issue("noncanonical_source_profile", "Source Layout Profile 4 JSON is not canonical", path="profiles/layout.json"))
+    if target_ok and target_raw != json_bytes(_canonical_target(target)): problems.append(issue("noncanonical_target_profile", "Target Layout Profile 5 JSON is not canonical", path=str(target_layout_path)))
+    if tags_ok and target_ok and not tag_problems and not layout_problems: problems.extend(_operational_target_problems(tags, target))
+    mappings: list[dict[str, Any]] = []; seen_partitions: dict[str, str] = {}; total = 0
+    guides = assets_markers = src_markers = directory_additions = 0
+    for partition_entry in _children(source):
+        if partition_entry.name == "profiles": continue
+        try:
+            require_safe_component(partition_entry.name, allow_profiles=False, label=partition_entry.name)
+            meta = partition_entry.stat(follow_symlinks=False)
+            if is_reparse_metadata(meta) or not stat.S_ISDIR(meta.st_mode): raise validation_error("Partition must be a real directory", "invalid_partition", path=partition_entry.name)
+            key = partition_entry.name.casefold()
+            if key in seen_partitions: raise validation_error("Partitions collide under case folding", "partition_casefold_collision", path=partition_entry.name)
+            seen_partitions[key] = partition_entry.name
+        except CortexError as exc:
+            problems.extend(exc.details.get("issues", [exc.as_issue()])); continue
+        units = _children(Path(partition_entry.path))
+        if not units: problems.append(issue("empty_partition", "Layout 4 partitions must be nonempty", path=partition_entry.name))
+        seen_units: dict[str, str] = {}
+        for unit_entry in units:
+            total += 1
+            unit = Path(unit_entry.path); unit_problems: list[dict[str, Any]] = []
+            try:
+                require_safe_component(unit_entry.name, allow_profiles=False, label=f"{partition_entry.name}/{unit_entry.name}")
+                meta = unit_entry.stat(follow_symlinks=False)
+                if is_reparse_metadata(meta) or not stat.S_ISDIR(meta.st_mode): raise validation_error("Record must be a real directory", "invalid_record_unit", path=f"{partition_entry.name}/{unit_entry.name}")
+                key = unit_entry.name.casefold()
+                if key in seen_units: raise validation_error("Records collide under case folding", "record_casefold_collision", path=f"{partition_entry.name}/{unit_entry.name}")
+                seen_units[key] = unit_entry.name
+            except CortexError as exc: unit_problems.extend(exc.details.get("issues", [exc.as_issue()]))
+            if tags_ok and old_ok and not tag_problems and not layout_problems and not unit_problems:
+                checked, manifest, kind = _layout4_unit(unit, partition=partition_entry.name, tags=tags, layout=old)
+                unit_problems.extend(checked)
+            else: manifest, kind = [], None
+            if unit_problems or kind is None:
+                problems.extend(unit_problems); continue
+            paths = {item["path"] for item in manifest}
+            additions = ["AGENTS.md", "CLAUDE.md"]
+            added_directories: list[str] = []
+            guides += 2
+            if "assets" not in paths:
+                additions.append("assets/.keep"); added_directories.append("assets"); assets_markers += 1; directory_additions += 1
+            elif not any(path.startswith("assets/") for path in paths):
+                additions.append("assets/.keep"); assets_markers += 1
+            if "src" not in paths:
+                additions.append("src/.keep"); added_directories.append("src"); src_markers += 1; directory_additions += 1
+            elif not any(path.startswith("src/") for path in paths):
+                additions.append("src/.keep"); src_markers += 1
+            mappings.append({"partition": partition_entry.name, "record": unit_entry.name, "kind": kind, "manifest": manifest, "add_files": additions, "add_directories": added_directories})
+    mappings.sort(key=lambda item: (item["partition"].encode("utf-8"), item["record"].encode("utf-8")))
+    counts = {"partitions": len(seen_partitions), "total": len(mappings), "guide_files": guides, "assets_markers": assets_markers, "src_markers": src_markers, "files_added": guides + assets_markers + src_markers, "dirs_added": directory_additions}
+    body = {"format": "cortex-layout4-to-layout5-plan-v1", "source": str(source), "profiles": {"record": record, "tags": tags, "layout": target}, "profile_sha256": {"record": _sha(record_raw), "tags": _sha(tags_raw), "source_layout": _sha(old_raw), "target_layout": _sha(target_raw)}, "counts": counts, "mappings": mappings, "issues": problems}
+    raw = json_bytes(body); return body, raw, _sha(raw)
+
+def plan_bundle(source: Path, target_layout_path: Path) -> tuple[dict[str, Any], bytes, str]:
+    """Dispatch exactly one supported adjacent edge from the target version."""
+    source_layout, _raw, _issues, readable = _guarded_json(
+        Path(os.path.abspath(source)) / "profiles" / "layout.json",
+        "migration_profile_invalid",
+    )
+    if readable and source_layout.get("version") == 4:
+        return _plan_4_to_5(source, target_layout_path)
+    return _plan_3_to_4(source, target_layout_path)
+
 def _contains(root: Path, target: Path) -> bool:
     root = root.resolve(strict=False); target = target.resolve(strict=False); return target == root or root in target.parents
 
@@ -224,6 +364,35 @@ def _git_repository(path: Path) -> Path:
         current = current.parent
     raise validation_error("Source has no derivable repository boundary", "migration_repository_not_found", path=str(path))
 
+def _registered_bundle_issues(path: Path) -> list[dict[str, Any]]:
+    try:
+        layout, layout_raw = _json_file(path / "profiles" / "layout.json", "migration_registered_sibling_invalid")
+    except CortexError as exc:
+        return exc.details.get("issues", [exc.as_issue()])
+    if layout.get("version") == 5:
+        return validate_workspace(path).issues
+    if layout.get("version") != 4 or layout_raw != json_bytes(_canonical_target(layout)):
+        return [issue("invalid_profile_version", "Registered sibling must use exact Layout 4 or Layout 5", path=str(path / "profiles/layout.json"))]
+    try:
+        record, record_raw = _json_file(path / "profiles" / "record-schema.json", "migration_registered_sibling_invalid")
+        tags, tags_raw = _json_file(path / "profiles" / "tags.json", "migration_registered_sibling_invalid")
+        problems = []
+        if record != RECORD_SCHEMA or record_raw != json_bytes(RECORD_SCHEMA): problems.append(issue("invalid_record_schema", "Registered sibling Record Profile is invalid"))
+        tag_problems = validate_tags_profile(tags); problems.extend(tag_problems)
+        if not tag_problems and tags_raw != json_bytes(_canonical_tags(tags)): problems.append(issue("noncanonical_source_profile", "Registered sibling Tag Profile is noncanonical"))
+        for partition in _children(path):
+            if partition.name == "profiles": continue
+            meta = partition.stat(follow_symlinks=False)
+            if is_reparse_metadata(meta) or not stat.S_ISDIR(meta.st_mode): problems.append(issue("invalid_partition", "Registered sibling partition must be a real directory", path=partition.name)); continue
+            units = _children(Path(partition.path))
+            if not units: problems.append(issue("empty_partition", "Registered sibling Layout 4 partition must be nonempty", path=partition.name))
+            for unit in units:
+                checked, _manifest, _kind_value = _layout4_unit(Path(unit.path), partition=partition.name, tags=tags, layout=layout)
+                problems.extend(checked)
+        return problems
+    except CortexError as exc:
+        return exc.details.get("issues", [exc.as_issue()])
+
 def _validated_boundaries(source: Path, kb_root_operand: Path | None, kb_repo_operand: Path | None) -> tuple[Path, ...]:
     if kb_root_operand is None or kb_repo_operand is None or not os.fspath(kb_root_operand) or not os.fspath(kb_repo_operand): raise validation_error("Exact KB root and KB repository operands are required", "migration_boundary_required")
     source = Path(os.path.abspath(source)); kb_root = Path(os.path.abspath(kb_root_operand)); kb_repo = Path(os.path.abspath(kb_repo_operand))
@@ -248,8 +417,8 @@ def _validated_boundaries(source: Path, kb_root_operand: Path | None, kb_repo_op
         sibling = kb_root / entry["path"]
         try: _real_dir(sibling, "migration_registered_sibling_invalid")
         except CortexError as exc: raise validation_error("Registered sibling Bundle is missing or invalid", "migration_registered_sibling_invalid", path=entry["path"], issues=[exc.as_issue()]) from exc
-        sibling_report = validate_workspace(sibling)
-        if not sibling_report.valid: raise validation_error("Registered sibling must be a valid Cortex 7 Layout 4 Bundle", "migration_registered_sibling_invalid", path=entry["path"], issues=sibling_report.issues)
+        sibling_issues = _registered_bundle_issues(sibling)
+        if sibling_issues: raise validation_error("Registered sibling must be a valid Layout 4 or Layout 5 Bundle", "migration_registered_sibling_invalid", path=entry["path"], issues=sibling_issues)
     for child in _children(kb_root):
         if child.name in {REGISTRY_FILENAME, ROOT_LOCK_FILENAME, ".git"} or child.name in registered: continue
         try: child_meta = child.stat(follow_symlinks=False)
@@ -278,11 +447,23 @@ def build_bundle(source: Path, output: Path, target_layout_path: Path, expected_
     if body["issues"]: raise validation_error("Migration plan contains issues", "migration_plan_invalid", issues=body["issues"])
     stage = output.parent / f".cortex-mig-{uuid.uuid4().hex}"; _destination(source, stage, protected)
     try:
-        stage.mkdir(); (stage / "profiles").mkdir(); shutil.copyfile(native_path(source / "profiles" / "record-schema.json"), native_path(stage / "profiles" / "record-schema.json")); shutil.copyfile(native_path(source / "profiles" / "tags.json"), native_path(stage / "profiles" / "tags.json")); (stage / "profiles" / "layout.json").write_bytes(json_bytes(body["profiles"]["layout"]))
-        for item in body["mappings"]:
-            partition = stage / item["partition"]; partition.mkdir(exist_ok=True); shutil.copytree(native_path(source / item["source_unit"]), native_path(partition / item["target_unit"]), symlinks=False)
-        report = validate_workspace(stage)
-        if not report.valid: raise validation_error("Candidate validation failed", "migration_candidate_invalid", issues=report.issues)
+        if body["format"] == "cortex-layout3-to-layout4-plan-v1":
+            stage.mkdir(); (stage / "profiles").mkdir(); shutil.copyfile(native_path(source / "profiles" / "record-schema.json"), native_path(stage / "profiles" / "record-schema.json")); shutil.copyfile(native_path(source / "profiles" / "tags.json"), native_path(stage / "profiles" / "tags.json")); (stage / "profiles" / "layout.json").write_bytes(json_bytes(body["profiles"]["layout"]))
+            for item in body["mappings"]:
+                partition = stage / item["partition"]; partition.mkdir(exist_ok=True); shutil.copytree(native_path(source / item["source_unit"]), native_path(partition / item["target_unit"]), symlinks=False)
+            expected_roots = {"profiles", *(item["partition"] for item in body["mappings"])}
+            if {entry.name for entry in _children(stage)} != expected_roots:
+                raise validation_error("Layout 4 candidate root differs from its approved plan", "migration_candidate_invalid")
+            for item in body["mappings"]:
+                if _walk(stage / item["partition"] / item["target_unit"]) != item["manifest"]:
+                    raise validation_error("Layout 4 candidate payload differs from its approved plan", "migration_candidate_invalid", path=f"{item['partition']}/{item['target_unit']}")
+        else:
+            shutil.copytree(native_path(source), native_path(stage), symlinks=False)
+            (stage / "profiles" / "layout.json").write_bytes(json_bytes(body["profiles"]["layout"]))
+            for item in body["mappings"]:
+                finalize_staged(stage / item["partition"] / item["record"], source=None)
+            report = validate_workspace(stage)
+            if not report.valid: raise validation_error("Layout 5 candidate validation failed", "migration_candidate_invalid", issues=report.issues)
         again, again_raw, again_digest = plan_bundle(source, target_layout_path)
         if (again, again_raw, again_digest) != (body, raw, digest): raise validation_error("Source changed during build", "migration_source_drift")
         try: rename_no_replace(stage, output)

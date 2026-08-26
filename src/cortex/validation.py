@@ -1,4 +1,4 @@
-"""Side-effect-free structural validation for a Cortex 7 record Bundle."""
+"""Side-effect-free structural validation for a Cortex 8 record Bundle."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from typing import Any
 from .constants import PROFILE_FILENAMES, RECORD_FIELDS, RECORD_SCHEMA
 from .errors import CortexError, issue
 from .jsonio import json_bytes, loads_object
+from .knowledge_unit import validate_complete_directory
 from .naming import require_naming_runtime, tag_title_date_name
 from .native import component_problem, is_reparse_metadata, native_path
 from .profiles import registered_tags, tag_groups, validate_layout_profile, validate_record, validate_record_schema, validate_tags_profile
@@ -140,7 +141,7 @@ def validate_record_directory(record_dir: Path, folder: str, *, registered: set[
     names = {e.name for e in entries}
     for forbidden in ("original", "representations"):
         if forbidden in names:
-            issues.append(issue("legacy_record_wrapper", "Legacy record wrappers are invalid in Layout 4", path=f"{label}/{forbidden}"))
+            issues.append(issue("legacy_record_wrapper", "Legacy record wrappers are invalid in Layout 5", path=f"{label}/{forbidden}"))
     if "record.json" not in names:
         issues.append(issue("missing_record_entry", "record.json is required", path=f"{label}/record.json"))
     record, payload = (None, None)
@@ -163,48 +164,23 @@ def validate_record_directory(record_dir: Path, folder: str, *, registered: set[
                 try:
                     expected = tag_title_date_name(selected, record["title"], record["timestamp"], maximum)
                     if folder != expected:
-                        issues.append(issue("record_name_mismatch", "Record folder does not match Layout 4 naming", path=label, expected=expected, actual=folder))
+                        issues.append(issue("record_name_mismatch", "Record folder does not match Layout 5 naming", path=label, expected=expected, actual=folder))
                 except CortexError as exc:
                     issues.append(exc.as_issue())
 
-    payload_names = names - {"record.json"}
-    md = sorted(name for name in payload_names if name.casefold().endswith(".md"))
-    js = sorted(name for name in payload_names if name.casefold().endswith(".json"))
-    dirs = {e.name for e in entries if e.name != "record.json" and e.is_dir(follow_symlinks=False)}
-    other = payload_names - set(md) - set(js) - dirs
-    full = len(md) == 1 and len(js) == 1 and Path(md[0]).stem == Path(js[0]).stem and dirs in ({"src"}, {"src", "assets"}) and not other
-    markdown_only = len(md) == 1 and not js and not dirs and not other
-    if not (full or markdown_only):
-        issues.append(issue("invalid_record_shape", "Unit must be exact full-conversion or Markdown-only Layout 4 shape", path=label))
-    for entry in entries:
-        if entry.name == "record.json":
-            continue
-        _component(entry.name, f"{label}/{entry.name}", issues)
-        try:
-            meta = entry.stat(follow_symlinks=False)
-        except OSError as exc:
-            issues.append(issue("path_unreadable", "Entry could not be inspected", path=f"{label}/{entry.name}", os_error=str(exc)))
-            continue
-        if is_reparse_metadata(meta):
-            issues.append(issue("reparse_path", "Links and reparse points are forbidden", path=f"{label}/{entry.name}"))
-        elif stat.S_ISDIR(meta.st_mode):
-            if entry.name not in {"src", "assets"}:
-                issues.append(issue("unexpected_record_entry", "Unexpected record directory", path=f"{label}/{entry.name}"))
-        elif not stat.S_ISREG(meta.st_mode):
-            issues.append(issue("nonregular_entry", "Only regular files and real directories are allowed", path=f"{label}/{entry.name}"))
-    if full:
-        src = record_dir / "src"
-        if _is_dir(src, f"{label}/src", issues):
-            src_entries = _scan(src, f"{label}/src", issues)
-            if len(src_entries) != 1:
-                issues.append(issue("invalid_conversion_source", "src must contain exactly one source file", path=f"{label}/src"))
-            for e in src_entries:
-                _component(e.name, f"{label}/src/{e.name}", issues)
-                _is_file(Path(e.path), f"{label}/src/{e.name}", issues)
-            if len(src_entries) == 1 and md and Path(src_entries[0].name).stem != Path(md[0]).stem:
-                issues.append(issue("conversion_source_stem_mismatch", "Conversion Markdown/JSON and src file must share one stem", path=f"{label}/src/{src_entries[0].name}"))
-        if "assets" in dirs and _is_dir(record_dir / "assets", f"{label}/assets", issues):
-            _opaque_assets(record_dir / "assets", f"{label}/assets", issues)
+    try:
+        validate_complete_directory(record_dir, cortex_record=True)
+    except CortexError as exc:
+        nested = exc.details.get("issues")
+        if isinstance(nested, list):
+            issues.extend(item for item in nested if isinstance(item, dict))
+        else:
+            problem = exc.as_issue()
+            if problem.get("path"):
+                problem["path"] = f"{label}/{problem['path']}".rstrip("/")
+            else:
+                problem["path"] = label
+            issues.append(problem)
     return issues
 
 
@@ -293,7 +269,7 @@ def validate_workspace(workspace: Path, *, locked_record_schema: bytes | None = 
             issues.append(issue("unknown_partition", "Partition must be an exact configured tag value", path=entry.name))
         units = _scan(partition_path, entry.name, issues)
         if not units:
-            issues.append(issue("empty_partition", "Layout 4 partitions must be nonempty", path=entry.name))
+            issues.append(issue("empty_partition", "Layout 5 partitions must be nonempty", path=entry.name))
         unit_collisions: dict[str, str] = {}
         for unit in units:
             count += 1

@@ -1,8 +1,8 @@
-# Cortex Record KB 7.0
+# Cortex Record KB 8.0
 
-Cortex 7.0.0 is a small, single-writer record KB using Record 1, Tag 2, Layout 4, and Registry 1. A Bundle contains `profiles/` and nonempty tag-named partitions; each partition directly contains canonical record units. Layout 3 is rejected by normal runtime operation.
+Cortex 8.0.0 is a small, single-writer record KB using Record 1, Tag 2, Layout 5, and Registry 1. A Bundle contains `profiles/` and nonempty tag-named partitions; each partition directly contains canonical record units. Layout 3 and Layout 4 are rejected by normal runtime operation.
 
-Layout 4 uses `partition_tag_group`, exact `partition_name_strategy: tag`, `unit_name_strategy: tag-title-date`, component limit 16..200, and duplicate rejection. An empty Bundle may temporarily have a null group; add requires exactly one selected tag and derives both `<partition>/<tag-title-date-unit>` without new CLI arguments.
+Layout 5 uses `partition_tag_group`, exact `partition_name_strategy: tag`, `unit_name_strategy: tag-title-date`, component limit 16..200, and duplicate rejection. Each record has private `record.json` plus the exact knowledge-unit base envelope and independently vendored navigation pair. An empty Bundle may temporarily have a null group; add requires exactly one selected tag and derives both `<partition>/<tag-title-date-unit>` without new naming arguments.
 
 Record edit/show/delete require separate exact operands:
 
@@ -16,13 +16,13 @@ export CORTEX_PYTHON=/absolute/path/to/python3.11
 
 The explicit-only skill taxonomy separates responsibilities without changing the KB CLI. The instruction-only `cortex` router selects exactly one of six canonical roles and packages no runtime:
 
-- `cortex-kb-ingest` owns `record.add` and the exact-v1 sequential batch wrapper only.
+- `cortex-kb-ingest` owns `record.add` and the sequential batch wrapper, preserving exact v1 syntax and adding exact v2 source/conversion/both syntax.
 - `cortex-kb-build` owns `manage.init`, `manage.config.set`, and `registry.set` only. It requires one explicit active build session and keyed-monotonic profile/Registry expansion.
 - `cortex-kb-manage` owns reads and validation plus exact `record.show`, `record.edit`, and `record.delete` only.
 
-Every canonical KB skill embeds the same complete offline Cortex 7 runtime; ownership is enforced by the skill contract, not by removing CLI routes.
+Every canonical KB skill embeds the same complete offline Cortex 8 runtime; ownership is enforced by the skill contract, not by removing CLI routes.
 
-Only `cortex-kb-ingest` carries `scripts/batch_record_add.py`. The helper is a sequential wrapper around the same verified `record add` route. It accepts exact v1 jobs from `--job <path|->` (stdin is preferred), validates every item before the first runner call, continues after valid non-ok Results, creates no persistent job state, and is not a core/public route.
+Only `cortex-kb-ingest` carries `scripts/batch_record_add.py`. The helper is a sequential wrapper around the same verified `record add` route. It preserves exact v1 syntax and adds exact v2 source-only, conversion-only, and both forms through `--job <path|->` (stdin is preferred). It validates every item's syntax before the first runner call, continues after valid non-ok Results, creates no persistent job state, and is not a core/public route.
 
 Cortex Notes 2.0 is a separate, dependency-free runtime in this repository. Its canonical roles are `cortex-notes-ingest`, `cortex-notes-build`, and `cortex-notes-manage`; each embeds one identical offline runtime. Every Bundle contains fixed Note Profile 1, independently validated Tag Profile 2, and closed Layout Profile 1 under `profiles/`; legacy `bundle.json` is rejected. Layout, never Bundle id, selects date or tag-group behavior. Tags grow through whole-profile keyed-monotonic candidates, with skeleton publication before the final atomic profile replacement and deterministic first-failure residue. Notes keeps Markdown and strict `note.json` metadata as its complete source of truth and has no database, index, search service, vector store, UI, network, synchronization, backup, move, restore, or trash layer. See `docs/notes-architecture.md`.
 
@@ -32,4 +32,4 @@ The Notes roles are disjoint: build owns Registry/Bundle initialization and whol
 
 Show/delete authorization uses `CORTEX_UNIT_TREE_V2`, which binds partition then unit before the no-follow manifest. Deleting the last unit removes its partition. Registered mutations and authorization share the stable root lock; standalone operations use the Record Profile byte lock.
 
-`tools/migrate_legacy_layout3.py` is noninstalled and nonpublic. It only plans/builds a source-read-only Layout 3 → Layout 4 candidate outside the KB and repository roots on the same volume. Planning requires canonical Record 1, Tag 2, and Layout 3 bytes and exact Layout 3 unit names. Build requires the exact initialized Registry 1 KB root and its derived repository boundary; omitted or false boundary operands fail closed. It has no cutover command. The `ibd-projects` acceptance gate is exactly 30 partitions, 395 units, 25 full, and 370 Markdown-only, preserving unit names, `record.json` bytes, payload bytes, and relative paths.
+`tools/migrate_layout.py` is the sole noninstalled, nonpublic migration dispatcher. It preserves source-read-only Layout 3 → Layout 4 plan/build and adds source-read-only Layout 4 → Layout 5 plan/build outside the KB and repository roots on the same volume. Build requires the exact initialized Registry 1 KB root and its derived repository boundary; omitted or false boundary operands fail closed. It has no cutover command. The Layout 4 → 5 edge preserves every existing record path and byte while adding only the exact guides and missing empty support state.

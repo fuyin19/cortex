@@ -18,11 +18,11 @@ import tomllib
 import zipfile
 
 
-VERSION = "7.0.0"
+VERSION = "8.0.0"
 DISTRIBUTION = "cortex-record-kb"
 IMPORT_NAME = "cortex"
-WHEEL_NAME = "cortex_record_kb-7.0.0-py3-none-any.whl"
-DIST_INFO = "cortex_record_kb-7.0.0.dist-info"
+WHEEL_NAME = "cortex_record_kb-8.0.0-py3-none-any.whl"
+DIST_INFO = "cortex_record_kb-8.0.0.dist-info"
 RUNTIME_SKILLS = (
     "cortex-kb-ingest",
     "cortex-kb-build",
@@ -52,10 +52,14 @@ def _zip_info(name: str) -> zipfile.ZipInfo:
 def _source_files(root: Path) -> list[tuple[str, bytes]]:
     package = root / "src" / IMPORT_NAME
     items: list[tuple[str, bytes]] = []
-    for path in sorted(package.glob("*.py"), key=lambda value: value.name.encode("utf-8")):
+    selected = [
+        path for path in package.rglob("*")
+        if path.is_file() and (path.suffix == ".py" or "resources/knowledge-unit" in path.as_posix())
+    ]
+    for path in sorted(selected, key=lambda value: value.relative_to(package).as_posix().encode("utf-8")):
         if path.is_symlink() or not path.is_file():
             raise RuntimeError(f"unsafe source package entry: {path}")
-        items.append((f"{IMPORT_NAME}/{path.name}", path.read_bytes()))
+        items.append((f"{IMPORT_NAME}/{path.relative_to(package).as_posix()}", path.read_bytes()))
     if not items or not any(name == "cortex/__init__.py" for name, _raw in items):
         raise RuntimeError("Cortex source package is incomplete")
     return items
@@ -125,9 +129,9 @@ import unicodedata
 import zipfile
 
 
-EXPECTED_VERSION = "7.0.0"
+EXPECTED_VERSION = "8.0.0"
 EXPECTED_DISTRIBUTION = "cortex-record-kb"
-EXPECTED_WHEEL_FILENAME = "cortex_record_kb-7.0.0-py3-none-any.whl"
+EXPECTED_WHEEL_FILENAME = "cortex_record_kb-8.0.0-py3-none-any.whl"
 EXPECTED_WHEEL_SHA256 = "__WHEEL_SHA256__"
 EXPECTED_MANIFEST_KEYS = {
     "schema_version", "distribution", "import", "version", "wheel",
@@ -193,7 +197,7 @@ def _load_manifest(path: Path) -> dict[str, object]:
 
 
 def _verify_archive(path: Path) -> None:
-    metadata_name = "cortex_record_kb-7.0.0.dist-info/METADATA"
+    metadata_name = "cortex_record_kb-8.0.0.dist-info/METADATA"
     try:
         with zipfile.ZipFile(path, "r") as archive:
             names = archive.namelist()
@@ -296,6 +300,10 @@ def _windows_launcher_bytes() -> bytes:
 
 
 def _batch_helper_bytes() -> bytes:
+    source = Path(__file__).resolve().parents[1] / "skills" / "cortex-kb-ingest" / "scripts" / "batch_record_add.py"
+    return source.read_bytes()
+
+    # Kept unreachable only as historical generator input for old source trees.
     return r'''#!/usr/bin/env python3
 """Build-skill-only sequential wrapper for Cortex record add."""
 
@@ -461,7 +469,7 @@ def _run(argv: list[str]) -> int:
     runner = Path(__file__).absolute().parent / "run_cortex.py"
     base = [sys.executable, "-I", str(runner)]
     preflight = _invoke([*base, "--version"])
-    if preflight.returncode != 0 or preflight.stdout.replace(b"\r\n", b"\n") != b"cortex 7.0.0\n" or preflight.stderr != b"":
+    if preflight.returncode != 0 or preflight.stdout.replace(b"\r\n", b"\n") != b"cortex 8.0.0\n" or preflight.stderr != b"":
         raise BatchUsage("runner_bootstrap_failed")
     results: list[dict[str, Any]] = []
     with tempfile.TemporaryDirectory(prefix="cortex-record-add-batch-") as temporary:
@@ -577,7 +585,8 @@ def _prepare_skill(root: Path, skill_name: str, expected: dict[str, bytes]) -> P
             if relative not in allowed_directories:
                 raise RuntimeError(f"unexpected runtime directory: {skill_name}/{relative}")
         elif stat.S_ISREG(result.st_mode):
-            if relative not in allowed_files:
+            generated_wheel = relative.startswith("scripts/vendor/cortex_record_kb-") and relative.endswith("-py3-none-any.whl")
+            if relative not in allowed_files and not generated_wheel:
                 raise RuntimeError(f"unexpected runtime artifact: {skill_name}/{relative}")
         else:
             raise RuntimeError(f"nonordinary runtime artifact is forbidden: {skill_name}/{relative}")
@@ -587,6 +596,9 @@ def _prepare_skill(root: Path, skill_name: str, expected: dict[str, bytes]) -> P
 def _install_payload(root: Path, expected: dict[str, bytes]) -> None:
     prepared = [(skill_name, _prepare_skill(root, skill_name, expected)) for skill_name in RUNTIME_SKILLS]
     for skill_name, skill in prepared:
+        for stale in (skill / "scripts" / "vendor").glob("cortex_record_kb-*-py3-none-any.whl"):
+            if stale.name != WHEEL_NAME:
+                stale.unlink()
         for relative, raw in expected.items():
             destination = skill / Path(relative)
             destination.parent.mkdir(parents=True, exist_ok=True)

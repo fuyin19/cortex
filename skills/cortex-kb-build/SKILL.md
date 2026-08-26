@@ -1,17 +1,17 @@
 ---
 name: cortex-kb-build
-description: Explicit invocation only for initializing, configuring, and registering Cortex 7.0 Bundles in one keyed-monotonic build session.
+description: Explicit invocation only for initializing, configuring, and registering Cortex 8.0 Bundles in one keyed-monotonic build session.
 ---
 
 # Cortex KB build
 
 Use this role only when the user explicitly names `cortex-kb-build`, or explicitly invokes `cortex` and the router selects KB build. Generic note, KB, or coding requests are insufficient triggers.
 
-Use this skill only for `manage.init`, `manage.config.set`, and `registry.set`. Never add, edit, show, or delete records, and never use another runtime route as a build step. The embedded runtime remains the complete closed Cortex 7 CLI; these ownership boundaries are this skill's contract, not runtime route removal.
+Use this skill only for `manage.init`, `manage.config.set`, and `registry.set`. Never add, edit, show, or delete records, and never use another runtime route as a build step. The embedded runtime remains the complete closed Cortex 8 CLI; these ownership boundaries are this skill's contract, not runtime route removal.
 
 ## Verified offline runtime
 
-Set `CORTEX_PYTHON` to the lexical absolute path of the intended Python 3.11/UCD 14 executable. The launcher verifies that path is an ordinary non-reparse file reached through ordinary non-reparse ancestors and is the same filesystem entry as `sys.executable`. On POSIX invoke `"$CORTEX_PYTHON" -I <ABSOLUTE-SKILL>/scripts/run_cortex.py`; on Windows use the identical convenience launcher `<ABSOLUTE-SKILL>\scripts\run_cortex.cmd`. First require `--version` to emit exactly `cortex 7.0.0` on stdout and empty stderr. Do not use PATH or fall back to a global command, ambient package, installation, sibling skill, network, or update.
+Set `CORTEX_PYTHON` to the lexical absolute path of the intended Python 3.11/UCD 14 executable. The launcher verifies that path is an ordinary non-reparse file reached through ordinary non-reparse ancestors and is the same filesystem entry as `sys.executable`. On POSIX invoke `"$CORTEX_PYTHON" -I <ABSOLUTE-SKILL>/scripts/run_cortex.py`; on Windows use the identical convenience launcher `<ABSOLUTE-SKILL>\scripts\run_cortex.cmd`. First require `--version` to emit exactly `cortex 8.0.0` on stdout and empty stderr. Do not use PATH or fall back to a global command, ambient package, installation, sibling skill, network, or update.
 
 ## One active build session
 
@@ -22,8 +22,8 @@ Every command and operand is explicit and complete: use `--workspace <bundle>` f
 Classify the explicit workspace before planning writes:
 
 - **new**: the workspace is absent and may receive `manage.init` once;
-- **resumed, empty configured**: an initialized valid Bundle has no record partitions and Layout 4 has a nonnull group;
-- **resumed, empty null sentinel**: an initialized valid Bundle has no record partitions and Layout 4 has `partition_tag_group: null`;
+- **resumed, empty configured**: an initialized valid Bundle has no record partitions and Layout 5 has a nonnull group;
+- **resumed, empty null sentinel**: an initialized valid Bundle has no record partitions and Layout 5 has `partition_tag_group: null`;
 - **resumed, populated**: a valid Bundle has one or more record partitions.
 
 Do not treat an invalid, partially initialized, linked, nonordinary, or otherwise unclassifiable path as resumable.
@@ -34,19 +34,19 @@ Read current canonical profile and Registry bytes before constructing complete c
 
 - Tag 2 is keyed by group `name`, then tag `tag`. Retain every existing group, every existing tag, and every existing tag's group membership. Candidates may add groups or tags and may edit descriptions only; they must not remove, rename, move, or otherwise replace a keyed member.
 - Registry 1 is keyed by bundle `id`. Retain every existing `id` to exact `path` mapping. Candidates may add id-to-path pairs and may edit descriptions only; they must not remove an id or reassign its path.
-- For a **populated** Bundle, Tag 2 and Layout 4 must remain byte-identical. The only permitted build write is a keyed-monotonic Registry expansion or description edit.
-- For **empty configured**, retain the exact `partition_tag_group`, `partition_name_strategy`, `unit_name_strategy`, and `duplicate_name_strategy`; retain Tag 2 under the keyed rule; and keep `max_component_length` the same or increase it within Layout 4 bounds.
-- For **empty null sentinel**, retain both naming strategies and `duplicate_name_strategy`; retain Tag 2 under the keyed rule; then change null only to an explicit existing candidate Tag 2 group that contains at least one tag. Keep `max_component_length` the same or increase it within Layout 4 bounds. Null may not remain the final configured state when the session is intended for ingestion.
+- For a **populated** Bundle, Tag 2 and Layout 5 must remain byte-identical. The only permitted build write is a keyed-monotonic Registry expansion or description edit.
+- For **empty configured**, retain the exact `partition_tag_group`, `partition_name_strategy`, `unit_name_strategy`, and `duplicate_name_strategy`; retain Tag 2 under the keyed rule; and keep `max_component_length` the same or increase it within Layout 5 bounds.
+- For **empty null sentinel**, retain both naming strategies and `duplicate_name_strategy`; retain Tag 2 under the keyed rule; then change null only to an explicit existing candidate Tag 2 group that contains at least one tag. Keep `max_component_length` the same or increase it within Layout 5 bounds. Null may not remain the final configured state when the session is intended for ingestion.
 
-Compare canonical bytes as well as parsed values wherever byte identity is required. A proposed removal, rename, move, registry reassignment, strategy change, group change on configured Layout 4, maximum decrease, populated profile rewrite, or null-to-missing/empty group is a contraction. Report it and perform no write.
+Compare canonical bytes as well as parsed values wherever byte identity is required. A proposed removal, rename, move, registry reassignment, strategy change, group change on configured Layout 5, maximum decrease, populated profile rewrite, or null-to-missing/empty group is a contraction. Report it and perform no write.
 
 ## Ordered execution
 
 Plan the complete ordered step list before invoking the first write.
 
 1. For a **new** workspace, invoke `manage.init` first, then continue as the resulting empty null-sentinel case.
-2. For **empty configured** with a `max_component_length` increase, set the complete Layout 4 candidate before the complete Tag 2 candidate, so newly admitted longer keys validate. With the same maximum, set Tag 2 before Layout 4 when a profile write is needed.
-3. For **empty null sentinel**, set the complete Tag 2 candidate first, then set Layout 4 from null to the explicit existing candidate group; this tags-before-layout order applies even when the maximum increases.
+2. For **empty configured** with a `max_component_length` increase, set the complete Layout 5 candidate before the complete Tag 2 candidate, so newly admitted longer keys validate. With the same maximum, set Tag 2 before Layout 5 when a profile write is needed.
+3. For **empty null sentinel**, set the complete Tag 2 candidate first, then set Layout 5 from null to the explicit existing candidate group; this tags-before-layout order applies even when the maximum increases.
 4. Invoke `registry.set` only after all requested Bundle profile steps succeed.
 
 Omit a profile or Registry write when its complete candidate bytes already equal the current canonical bytes. Each invocation uses `--json`; accept only one well-formed core Result with matching command and exit code.

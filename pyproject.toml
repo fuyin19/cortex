@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cortex-record-kb"
-version = "7.0.0"
+version = "8.0.0"
 description = "Minimal single-writer record knowledge base"
 requires-python = ">=3.11,<3.12"
 dependencies = []
@@ -14,6 +14,9 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+cortex = ["resources/knowledge-unit/*.md"]
 
 [tool.pytest.ini_options]
 addopts = "-q"

@@ -1,4 +1,4 @@
-"""Closed Cortex 7 command-line interface."""
+"""Closed Cortex 8 command-line interface."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ class ContractParser(argparse.ArgumentParser):
 def _parser() -> ContractParser:
     parser = ContractParser(prog="cortex")
     parser.add_argument("--json", action="store_true", help="emit one machine-readable Result")
-    parser.add_argument("--workspace", help="one Cortex 7 Bundle root")
+    parser.add_argument("--workspace", help="one Cortex 8 Bundle root")
     parser.add_argument("--kb-root", help="one registered Cortex KB root")
     parser.add_argument("--bundle-id", help="explicit registered Bundle id")
     parser.add_argument("--version", action="version", version=f"cortex {VERSION}")
@@ -52,7 +52,7 @@ def _parser() -> ContractParser:
     record = groups.add_parser("record")
     record_commands = record.add_subparsers(dest="record_command", required=True)
     add = record_commands.add_parser("add")
-    add.add_argument("--source", required=True)
+    add.add_argument("--source")
     add.add_argument("--conversion")
     add.add_argument("--metadata", required=True)
     edit = record_commands.add_parser("edit")

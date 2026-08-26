@@ -1,4 +1,4 @@
-"""Cortex 7 record-KB operations."""
+"""Cortex 8 record-KB operations."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from typing import Any, Iterator
 from .constants import DEFAULT_LAYOUT, DEFAULT_TAGS, RECORD_FIELDS, RECORD_SCHEMA, REGISTRY_FILENAME, ROOT_LOCK_FILENAME, VERSION
 from .errors import CortexError, Status, io_error, usage_error, validation_error
 from .jsonio import json_bytes, loads_object, read_json_operand
+from .knowledge_unit import finalize_staged, inspect_input
 from .locking import writer_lock, workspace_lock_path
 from .naming import tag_title_date_name
 from .native import (
@@ -186,46 +187,52 @@ def _residue_count(root: Path) -> int:
     return count
 
 
-def _conversion_shape(entries: list[tuple[str, Path, bool]], source: Path) -> None:
-    files = [relative for relative, _path, directory in entries if not directory]
-    if any(relative.casefold() == "record.json" for relative in files):
-        raise validation_error(
-            "Converter payload must not contain reserved Cortex record.json",
-            "reserved_record_metadata",
-            path="record.json",
-        )
-    roots = {relative.split("/", 1)[0] for relative, _path, _directory in entries}
-    top_md = [name for name in files if "/" not in name and name.casefold().endswith(".md")]
-    top_json = [name for name in files if "/" not in name and name.casefold().endswith(".json")]
-    src_files = [name for name in files if name.startswith("src/") and name.count("/") == 1]
-    allowed = {top_md[0] if top_md else "", top_json[0] if top_json else "", src_files[0] if src_files else ""}
-    other = [name for name in files if name not in allowed and not name.startswith("assets/")]
-    if len(top_md) != 1 or len(top_json) != 1 or Path(top_md[0]).stem != Path(top_json[0]).stem or len(src_files) != 1 or other or not roots <= {top_md[0], top_json[0], "src", "assets"}:
-        raise validation_error("Conversion must have the exact canonical full bundle shape", "invalid_conversion_shape")
-    if Path(src_files[0]).stem != Path(top_md[0]).stem:
-        raise validation_error("Conversion Markdown/JSON and src file must share one stem", "conversion_source_stem_mismatch")
-    converted_source = next(path for relative, path, directory in entries if not directory and relative == src_files[0])
-    if Path(src_files[0]).name != source.name or _sha256(converted_source) != _sha256(source):
-        raise validation_error("--source must equal conversion src by basename and SHA-256", "conversion_source_mismatch")
-
-
-def _safe_source(source_text: str) -> Path:
+def _safe_source(source_text: str | None) -> Path | None:
+    if source_text is None:
+        return None
     if source_text == "-":
         raise usage_error("--source does not support stdin", "source_stdin_unsupported")
     source = Path(os.path.abspath(source_text))
     require_regular_file(source, code="source_not_ordinary")
     require_safe_component(source.name, label=source.name)
+    if source.name.casefold() in {
+        "record.json",
+        "agents.md",
+        "agents.override.md",
+        "claude.md",
+        "claude.local.md",
+        ".cursorrules",
+        ".mcp.json",
+    }:
+        raise validation_error(
+            "Source name collides with knowledge-unit control or Cortex metadata",
+            "reserved_source_name",
+            path=source.name,
+        )
     return source
 
 
-def _safe_conversion(conversion_text: str | None) -> tuple[Path | None, list[tuple[str, Path, bool]] | None]:
+def _safe_conversion(
+    conversion_text: str | None,
+) -> tuple[Path | None, list[tuple[str, Path, bool]] | None, Path | None]:
     if conversion_text is None:
-        return None, None
+        return None, None, None
     if conversion_text == "-":
         raise usage_error("--conversion does not support stdin", "conversion_stdin_unsupported")
     conversion = Path(os.path.abspath(conversion_text))
-    _, entries = inspect_conversion(conversion)
-    return conversion, entries
+    entries, _stem, retained_source = inspect_input(conversion)
+    return conversion, entries, retained_source
+
+
+def _match_retained_source(source: Path | None, retained: Path | None) -> None:
+    if source is None or retained is None:
+        return
+    if retained.name != source.name or _sha256(retained) != _sha256(source):
+        raise validation_error(
+            "--source must equal retained conversion source by basename and SHA-256",
+            "conversion_source_mismatch",
+            path=f"src/{retained.name}",
+        )
 
 
 def _require_initialized_lock_target(workspace: Path) -> None:
@@ -354,11 +361,22 @@ class CortexService:
         _atomic_replace_json(self.workspace / "profiles" / f"{profile}.json", value, profile)
         return Outcome(data={"profile": profile, "value": value})
 
-    def record_add(self, source_operand: str, conversion_operand: str | None, metadata_operand: str) -> Outcome:
+    def record_add(
+        self,
+        source_operand: str | None,
+        conversion_operand: str | None,
+        metadata_operand: str,
+    ) -> Outcome:
+        if source_operand is None and conversion_operand is None:
+            raise usage_error(
+                "record add requires --source, --conversion, or both",
+                "record_payload_required",
+            )
         metadata, _ = read_json_operand(metadata_operand)
         _precheck_metadata_shape(metadata)
-        _safe_source(source_operand)
-        _safe_conversion(conversion_operand)
+        preflight_source = _safe_source(source_operand)
+        _, _preflight_entries, preflight_retained = _safe_conversion(conversion_operand)
+        _match_retained_source(preflight_source, preflight_retained)
         with self._mutation_report() as report:
             assert report.tags is not None and report.layout is not None
             if report.layout["partition_tag_group"] is None:
@@ -369,11 +387,16 @@ class CortexService:
             record = _complete_metadata(metadata, registered, auto_timestamp=False)
             naming_tag, _naming_tags = _naming_tag_for_record(record, report.tags, report.layout)
             source = _safe_source(source_operand)
-            _, conversion_entries = _safe_conversion(conversion_operand)
-            if conversion_entries is None and source.suffix.casefold() != ".md":
-                raise validation_error("Markdown-only add requires a .md source", "invalid_source_only")
-            if conversion_entries is not None:
-                _conversion_shape(conversion_entries, source)
+            _, conversion_entries, retained_source = _safe_conversion(conversion_operand)
+            _match_retained_source(source, retained_source)
+            if conversion_entries is None:
+                assert source is not None
+                if source.suffix == "":
+                    raise validation_error(
+                        "Source-only representation must have an extension",
+                        "representation_extension_required",
+                        path=source.name,
+                    )
             partition = naming_tag
             require_safe_component(partition, allow_profiles=False, label=partition)
             if len(partition.encode("utf-8")) > layout["max_component_length"]:
@@ -411,7 +434,12 @@ class CortexService:
                         else:
                             copy_regular(item_source, target)
                 else:
+                    assert source is not None
                     copy_regular(source, staged_unit / source.name)
+                finalize_staged(
+                    staged_unit,
+                    source=source if conversion_entries is not None else None,
+                )
                 problems = validate_record_directory(
                     staged_unit,
                     folder,

@@ -21,7 +21,7 @@ SKILL_NAMES = (
 )
 BATCH_SKILL_NAMES = ("cortex-kb-ingest",)
 NON_BATCH_SKILL_NAMES = tuple(name for name in SKILL_NAMES if name not in BATCH_SKILL_NAMES)
-WHEEL_NAME = "cortex_record_kb-7.0.0-py3-none-any.whl"
+WHEEL_NAME = "cortex_record_kb-8.0.0-py3-none-any.whl"
 PAYLOAD_PATHS = (
     Path("scripts/run_cortex.py"),
     Path("scripts/run_cortex.cmd"),
@@ -29,7 +29,7 @@ PAYLOAD_PATHS = (
     Path("scripts/vendor") / WHEEL_NAME,
 )
 RUNTIME_SCENARIOS = {
-    "runtime-sc001": "Each of three complete KB skill copies runs Cortex 7.0.0 independently.",
+    "runtime-sc001": "Each of three complete KB skill copies runs Cortex 8.0.0 independently.",
     "runtime-sc002": "All three KB skills carry byte-identical runner, manifest, and wheel payloads.",
     "runtime-sc003": "PATH Cortex 4 sentinels are never invoked.",
     "runtime-sc004": "Hostile PYTHONPATH and ambient Cortex modules are ignored by isolated launch.",
@@ -39,7 +39,7 @@ RUNTIME_SCENARIOS = {
     "runtime-sc008": "Offline deterministic regeneration and Candidate parity checks pass.",
     "runtime-sc009": "The embedded wheel has exact Cortex metadata, no dependencies, and no console script.",
     "runtime-sc010": "A disposable wheel projection creates no command launcher.",
-    "runtime-sc011": "The Cortex 7 public routes, package version, and source CLI contract remain closed.",
+    "runtime-sc011": "The Cortex 8 public routes, package version, and source CLI contract remain closed.",
     "runtime-sc012": "Source and all three bundled KB runtimes produce equal Results and disposable Bundle trees.",
     "runtime-sc013": "Skills, documentation, capability fixture, and runtime scenario mapping agree.",
     "runtime-sc014": "CORTEX_PYTHON binds the exact Python 3.11/UCD 14 executable before dispatch; missing, relative, Python 3.12, and wrong-file values fail before mutation.",
@@ -95,7 +95,7 @@ def test_runtime_sc001_independent_complete_skill_copies(tmp_path: Path) -> None
         copied = _copy_skill(tmp_path, name)
         result = _runner(copied, "--version")
         assert result.returncode == 0
-        assert result.stdout == "cortex 7.0.0\n" and result.stderr == ""
+        assert result.stdout == "cortex 8.0.0\n" and result.stderr == ""
         shutil.rmtree(copied)
 
 
@@ -118,7 +118,7 @@ def test_runtime_sc003_path_cortex4_sentinel_is_never_used(tmp_path: Path) -> No
     env = dict(os.environ)
     env["PATH"] = str(sentinel) + os.pathsep + env.get("PATH", "")
     result = _runner(_skill("cortex-kb-ingest"), "--version", env=env)
-    assert result.returncode == 0 and result.stdout == "cortex 7.0.0\n" and result.stderr == ""
+    assert result.returncode == 0 and result.stdout == "cortex 8.0.0\n" and result.stderr == ""
     assert not marker.exists()
 
 
@@ -137,7 +137,7 @@ def test_runtime_sc004_hostile_pythonpath_and_ambient_module_are_ignored(tmp_pat
     env = dict(os.environ)
     env["PYTHONPATH"] = str(hostile)
     result = _runner(_skill("cortex-kb-manage"), "--version", env=env)
-    assert result.returncode == 0 and result.stdout == "cortex 7.0.0\n" and result.stderr == ""
+    assert result.returncode == 0 and result.stdout == "cortex 8.0.0\n" and result.stderr == ""
     assert not marker.exists()
 
 
@@ -286,8 +286,8 @@ def test_runtime_sc009_wheel_metadata_has_no_dependencies_or_command() -> None:
     wheel = _skill("cortex-kb-ingest") / "scripts" / "vendor" / WHEEL_NAME
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
-        metadata = archive.read("cortex_record_kb-7.0.0.dist-info/METADATA").decode("utf-8")
-    assert "Name: cortex-record-kb\n" in metadata and "Version: 7.0.0\n" in metadata
+        metadata = archive.read("cortex_record_kb-8.0.0.dist-info/METADATA").decode("utf-8")
+    assert "Name: cortex-record-kb\n" in metadata and "Version: 8.0.0\n" in metadata
     assert "Requires-Dist:" not in metadata
     assert not any(name.endswith("entry_points.txt") for name in names)
     pyproject = (ROOT / "pyproject.toml").read_text("utf-8")
@@ -305,7 +305,7 @@ def test_runtime_sc010_disposable_projection_has_no_launcher(tmp_path: Path) -> 
 
 
 def test_runtime_sc011_source_contract_is_unchanged() -> None:
-    assert VERSION == "7.0.0"
+    assert VERSION == "8.0.0"
     assert tuple(PUBLIC_ROUTES) == (
         "registry.show", "registry.validate", "registry.resolve", "registry.set",
         "manage.init", "manage.status", "manage.validate", "manage.config.show", "manage.config.set",
@@ -378,7 +378,7 @@ def test_runtime_sc013_surfaces_and_exact_mapping_agree() -> None:
             *(f"skills/{name}/SKILL.md" for name in SKILL_NAMES),
         )
     )
-    for required in ("CORTEX_PYTHON", "-I", "skill-local", "7.0.0", "complete", "global", "UTF-8"):
+    for required in ("CORTEX_PYTHON", "-I", "skill-local", "8.0.0", "complete", "global", "UTF-8"):
         assert required in combined
     matrix = (ROOT / "docs" / "verification-matrix.md").read_text("utf-8")
     actual: dict[str, str] = {}
@@ -447,7 +447,7 @@ def _configure_bundle_for_runtime(tmp_path: Path) -> Path:
             {"name": "project", "tags": [{"tag": "project-alpha", "description": "Alpha"}]},
             {"name": "kind", "tags": [{"tag": "research", "description": "Research"}]},
         ]},
-        "layout": {"version": 4, "partition_tag_group": "project", "partition_name_strategy": "tag",
+        "layout": {"version": 5, "partition_tag_group": "project", "partition_name_strategy": "tag",
                    "unit_name_strategy": "tag-title-date", "max_component_length": 96,
                    "duplicate_name_strategy": "reject"},
     }
@@ -542,15 +542,65 @@ def test_runtime_sc016_ingest_batch_mixes_full_and_markdown(tmp_path: Path, skil
     assert wrapper["summary"] == {"total": 2, "succeeded": 2, "failed": 0}
 
 
+def test_sc021_batch_v2_accepts_source_conversion_and_both(tmp_path: Path) -> None:
+    bundle = _configure_bundle_for_runtime(tmp_path)
+    source_only = tmp_path / "source-only.bin"
+    source_only.write_bytes(b"source-only")
+    conversion_only = tmp_path / "conversion-only"
+    conversion_only.mkdir()
+    (conversion_only / "converted.md").write_bytes(b"converted")
+    retained = tmp_path / "retained.pdf"
+    retained.write_bytes(b"retained")
+    combined = tmp_path / "combined"
+    combined.mkdir()
+    (combined / "retained.md").write_bytes(b"combined")
+    job = {"version": 2, "items": [
+        {"id": "source", "source": str(source_only), "metadata": _metadata("Source v2")},
+        {"id": "conversion", "conversion": str(conversion_only), "metadata": _metadata("Conversion v2")},
+        {
+            "id": "both", "source": str(retained), "conversion": str(combined),
+            "metadata": _metadata("Both v2"),
+        },
+    ]}
+    result = _batch(
+        _skill("cortex-kb-ingest"), "--workspace", str(bundle), "--job", "-",
+        stdin=json.dumps(job).encode("utf-8"),
+    )
+    wrapper = json.loads(result.stdout)
+    assert result.returncode == 0 and result.stderr == b""
+    assert wrapper["summary"] == {"total": 3, "succeeded": 3, "failed": 0}
+    records = [bundle / item["result"]["data"]["partition"] / item["result"]["data"]["record"] for item in wrapper["items"]]
+    assert (records[0] / "source-only.bin").read_bytes() == source_only.read_bytes()
+    assert (records[1] / "src" / ".keep").read_bytes() == b""
+    assert (records[2] / "src" / "retained.pdf").read_bytes() == retained.read_bytes()
+
+
+def test_sc021_batch_v2_syntax_failure_is_whole_job_zero_write(tmp_path: Path) -> None:
+    workspace = tmp_path / "must-not-exist"
+    valid_source = tmp_path / "valid.md"
+    valid_source.write_bytes(b"valid")
+    job = {"version": 2, "items": [
+        {"id": "valid", "source": str(valid_source), "metadata": _metadata("Valid")},
+        {"id": "invalid", "metadata": _metadata("Missing input")},
+    ]}
+    result = _batch(
+        _skill("cortex-kb-ingest"), "--workspace", str(workspace), "--job", "-",
+        stdin=json.dumps(job).encode("utf-8"),
+    )
+    assert result.returncode == 2 and result.stdout == b""
+    assert b"job_item_shape_invalid" in result.stderr
+    assert not workspace.exists()
+
+
 @pytest.mark.parametrize("skill_name", BATCH_SKILL_NAMES)
 def test_runtime_sc017_middle_failure_continues(tmp_path: Path, skill_name: str) -> None:
     bundle = _configure_bundle_for_runtime(tmp_path)
     first = tmp_path / "first.md"; first.write_bytes(b"first")
-    invalid = tmp_path / "invalid.pdf"; invalid.write_bytes(b"invalid")
+    duplicate = tmp_path / "duplicate.pdf"; duplicate.write_bytes(b"duplicate")
     last = tmp_path / "last.md"; last.write_bytes(b"last")
     job = {"version": 1, "items": [
         {"id": "first", "source": str(first), "metadata": _metadata("First")},
-        {"id": "invalid", "source": str(invalid), "metadata": _metadata("Invalid")},
+        {"id": "duplicate", "source": str(duplicate), "metadata": _metadata("First")},
         {"id": "last", "source": str(last), "metadata": _metadata("Last")},
     ]}
     result = _batch(_skill(skill_name), "--workspace", str(bundle), "--job", "-",

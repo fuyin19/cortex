@@ -92,12 +92,12 @@ def test_taxonomy_sc004_keyed_monotonic_and_prewrite_contraction_rejection() -> 
 
 def test_taxonomy_sc005_profile_modes_and_conditional_order_are_exact() -> None:
     build = _skill("cortex-kb-build")
-    assert "For a **populated** Bundle, Tag 2 and Layout 4 must remain byte-identical" in build
+    assert "For a **populated** Bundle, Tag 2 and Layout 5 must remain byte-identical" in build
     assert "keep `max_component_length` the same or increase it" in build
     configured = build.index("For **empty configured** with a `max_component_length` increase")
-    layout_before_tags = build.index("set the complete Layout 4 candidate before the complete Tag 2 candidate", configured)
+    layout_before_tags = build.index("set the complete Layout 5 candidate before the complete Tag 2 candidate", configured)
     sentinel = build.index("For **empty null sentinel**", layout_before_tags)
-    tags_before_layout = build.index("set the complete Tag 2 candidate first, then set Layout 4", sentinel)
+    tags_before_layout = build.index("set the complete Tag 2 candidate first, then set Layout 5", sentinel)
     assert configured < layout_before_tags < sentinel < tags_before_layout
     assert "this tags-before-layout order applies even when the maximum increases" in build
     assert "existing candidate Tag 2 group that contains at least one tag" in build
@@ -113,7 +113,7 @@ def test_taxonomy_sc006_first_failure_stops_and_reports_late_residue() -> None:
 
 
 def test_taxonomy_sc007_core_runtime_is_invariant_and_plugin_is_v9() -> None:
-    assert VERSION == "7.0.0"
+    assert VERSION == "8.0.0"
     assert tuple(PUBLIC_ROUTES) == (
         "registry.show", "registry.validate", "registry.resolve", "registry.set",
         "manage.init", "manage.status", "manage.validate", "manage.config.show", "manage.config.set",
@@ -121,9 +121,9 @@ def test_taxonomy_sc007_core_runtime_is_invariant_and_plugin_is_v9() -> None:
     )
     package = json.loads((ROOT / "package.json").read_text("utf-8"))
     plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text("utf-8"))
-    assert package == {"name": "cortex-record-kb", "version": "7.0.0", "description": "Minimal single-writer record knowledge base."}
+    assert package == {"name": "cortex-record-kb", "version": "8.0.0", "description": "Minimal single-writer record knowledge base."}
     assert plugin["version"] == "9.0.0" and "Explicit-only Cortex router" in plugin["description"]
-    assert (ROOT / "tools" / "migrate_legacy_layout3.py").is_file()
+    assert (ROOT / "tools" / "migrate_layout.py").is_file()
 
 
 def test_taxonomy_runtime_and_batch_owner_lists_are_ordered_and_exact() -> None:

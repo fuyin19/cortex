@@ -1,47 +1,45 @@
-# Cortex 7 verification matrix
+# Cortex 8 knowledge-unit verification matrix
 
-| Scenario | Frozen semantic |
-|---|---|
-| sc001 | Full unit preserves its exact canonical payload shape under one partition. |
-| sc002 | Malformed conversion rejects without mutation. |
-| sc003 | Markdown-only input creates the exact two-file unit under one partition. |
-| sc004 | Non-Markdown source-only input rejects without mutation. |
-| sc005 | Partition is the exact selected tag and unit naming remains tag-title-date. |
-| sc006 | Python 3.11/UCD 14 naming and whole-codepoint truncation are deterministic. |
-| sc007 | Exact and case-fold duplicate partitions/units reject without suffixes. |
-| sc008 | Layout 3 and legacy flat runtime behavior reject without fallback. |
-| sc009 | Cortex 7.0.0 exposes Record 1, Tag 2, Layout 4, Registry 1. |
-| sc010 | Edit cannot change title, timestamp, or selected partition tag. |
-| sc011 | Nonpartition tag edit preserves every payload byte. |
-| sc012 | V2 digest independently binds partition then record and manifest. |
-| sc013 | V2 digest changes on authorized path or byte change. |
-| sc014 | Show requires exact separate partition and record operands. |
-| sc015 | Matching digest deletes exactly one selected record. |
-| sc016 | Bad/stale digest rejects; last-unit deletion removes the empty partition. |
-| sc017 | Registered authorization refreshes and validates after root-lock acquisition. |
-| sc018 | Root-lock contention returns busy/5 without mutation. |
-| sc019 | Unsafe operands, links, reparse points, and nonregular entries reject. |
-| sc020 | Delete failure reports honest partial state and residue status. |
-| sc021 | Delete creates no stage, trash, journal, tombstone, or recovery artifact. |
-| sc022 | Layout3→4 planning deterministically validates canonical Record 1/Tag 2/Layout 3 bytes and exact derived flat-unit names while remaining source-read-only. |
-| sc023 | Planning aggregates profile, record, naming, and payload issues before any output. |
-| sc024 | Build publishes only a separate absent candidate. |
-| sc025 | Full units preserve exact unit name, record bytes, payload bytes, and paths. |
-| sc026 | Source/conversion mismatch blocks before output. |
-| sc027 | Markdown-only units preserve exact bytes and relative paths. |
-| sc028 | No installed/public migration or cutover route exists. |
-| sc029 | ibd-projects gates 30 partitions, 395 total, 25 full, 370 Markdown-only. |
-| sc030 | All three canonical KB skills carry one pinned, byte-identical Cortex 7.0.0 runtime; only ingest carries the helper. |
-| sc031 | Implementation, AGENTS/CLAUDE adapter, docs, the non-role router, all six canonical roles, explicit-only metadata, and capability fixtures agree. |
-| sc032 | Full pytest, external-cache compileall, package, and runtime check pass. |
-| sc033 | Candidate/staging under the actual Cortex repo, validated KB root, or derived KB repo, plus false/omitted boundary operands and wrong-volume staging, reject before output. |
-| sc034 | The repository contains exactly one noninstalled migration utility and it exposes deterministic Layout3-to-Layout4 plan/build only, with no cutover function, subcommand, or product route. |
+The scenario identifiers and scope below are the frozen acceptance baseline. The evidence column names repository tests or task-local commands; it does not imply coverage beyond those checks.
+
+| Scenario | Frozen semantic | Evidence |
+|---|---|---|
+| sc-001 | Both repositories vendor the exact standalone navigation bytes and hashes. | `tests/knowledge-unit/test_envelope.py`; `tests/test_knowledge_unit.py` |
+| sc-002 | Default Markdown conversion publishes the complete base envelope. | Markdown conversion bundle tests |
+| sc-003 | Default PDF conversion publishes the same complete base envelope. | PDF conversion bundle tests |
+| sc-004 | Default file conversion delegates to a complete base-envelope result. | File conversion router tests |
+| sc-005 | Producer and router paths have byte/shape parity for equivalent output. | File and Markdown conversion router-parity tests |
+| sc-006 | Direct one-file Markdown and PDF modes remain byte-for-byte legacy behavior. | Direct-mode regression tests |
+| sc-007 | Canonical v1 bytes, links, and manifest remain unchanged and exclude envelope files. | Canonical-schema and bundle manifest regressions |
+| sc-008 | Portable components plus exact stem and case-folded name/suffix uniqueness fail closed. | Both knowledge-unit validator suites |
+| sc-009 | Empty support directories use only zero-byte `.keep`; payload removes markers; empty nested directories reject. | Both knowledge-unit validator suites |
+| sc-010 | Extra controls, unsafe paths, links, reparse points, nonregular nodes, and containment escapes are zero-write failures. | Validator negative cases and producer transactional tests |
+| sc-011 | Guides must be present and exact; missing or tampered bytes reject without repair. | Exact-resource and tamper tests in both repositories |
+| sc-012 | Control injection rejects and opaque container members are not scanned. | Validator control tests and opaque-payload regressions |
+| sc-013 | Output collision, rename, and overwrite guards remain fail-closed. | Producer collision/publication regressions |
+| sc-014 | Producer failure at each transactional boundary leaves no partial published unit. | Producer failure-injection regressions |
+| sc-015 | Init emits Layout 5; Layout 4 and mixed-layout runtime state reject without fallback. | `tests/test_cortex7.py`; `tests/test_knowledge_unit.py` |
+| sc-016 | The profile naming schema addresses only partition and record directories, not record contents. | Cortex naming and arbitrary representation/source/asset tests |
+| sc-017 | Source-only add creates one root representation and complete empty support state. | `tests/test_knowledge_unit.py` |
+| sc-018 | Conversion-only add validates/completes an owned base envelope. | `tests/test_knowledge_unit.py` |
+| sc-019 | Combined add fills or verifies the retained source by basename and SHA-256. | `tests/test_knowledge_unit.py` |
+| sc-020 | `record.json` is Cortex-private: conversion collisions reject at the Cortex boundary. | `tests/test_knowledge_unit.py`; producer namespace test |
+| sc-021 | Batch v1/v2 syntax is whole-job preflight; runtime failures preserve earlier successes and continue, with failed records zero-write. | `tests/test_skill_runtime.py` batch cases |
+| sc-022 | Existing public routes, Result schema, Record 1, Tag 2, Registry 1, TreeV2, and Notes remain compatible. | Full Cortex regression suite |
+| sc-023 | The sole dispatcher preserves 3→4 and adds deterministic, source-read-only, bounded 4→5 plan/build with no cutover. | `tests/test_bundle_migration.py` |
+| sc-024 | The KB migration has exact 30/421 counts and candidate/worktree path-byte equality. | Task-local long-path migration verifier |
+| sc-025 | Frozen versions and three byte-identical packaged Cortex 8 wheels are exact and offline. | Version tests; `tests/test_skill_runtime.py`; packager `--check` |
+| sc-026 | Scoped EOL rules and a disposable Git clone preserve exact LF/marker behavior. | Generator `check-attr`/raw-byte checks; exact candidate materialization in a disposable clone is reserved for official Testing |
+| sc-027 | An actual producer bundle is accepted by packaged Cortex end to end. | Task-local producer-to-packaged-runtime integration |
+| sc-028 | Documentation and both root guidance files describe independent vendoring and the same contract boundary. | Documentation/guidance assertions and resource hash checks |
+| sc-029 | The Chinese feasibility memo contains the frozen decision matrix, triggers, migration path, and no-central-runtime recommendation. | Candidate memo content/hash verification |
+| sc-030 | Disposable multi-repository fault/resume, pre-cleanup verification, and cleanup leave only intended deliverables. | Task-local closeout verification |
 
 Repository boundary vocabulary: candidate under KB root; candidate under source repo; candidate under KB repo; same-volume staging; plan/build only; no cutover.
 
 | Runtime scenario | Frozen semantic |
 |---|---|
-| runtime-sc001 | Each of three complete KB skill copies runs Cortex 7.0.0 independently. |
+| runtime-sc001 | Each of three complete KB skill copies runs Cortex 8.0.0 independently. |
 | runtime-sc002 | All three KB skills carry byte-identical runner, manifest, and wheel payloads. |
 | runtime-sc003 | PATH Cortex 4 sentinels are never invoked. |
 | runtime-sc004 | Hostile PYTHONPATH and ambient Cortex modules are ignored by isolated launch. |
@@ -51,7 +49,7 @@ Repository boundary vocabulary: candidate under KB root; candidate under source 
 | runtime-sc008 | Offline deterministic regeneration and Candidate parity checks pass. |
 | runtime-sc009 | The embedded wheel has exact Cortex metadata, no dependencies, and no console script. |
 | runtime-sc010 | A disposable wheel projection creates no command launcher. |
-| runtime-sc011 | The Cortex 7 public routes, package version, and source CLI contract remain closed. |
+| runtime-sc011 | The Cortex 8 public routes, package version, and source CLI contract remain closed. |
 | runtime-sc012 | Source and all three bundled KB runtimes produce equal Results and disposable Bundle trees. |
 | runtime-sc013 | Skills, documentation, capability fixture, and runtime scenario mapping agree. |
 | runtime-sc014 | CORTEX_PYTHON binds the exact Python 3.11/UCD 14 executable before dispatch; missing, relative, Python 3.12, and wrong-file values fail before mutation. |

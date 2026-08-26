@@ -12,7 +12,7 @@ PARTITION = "project-alpha"
 def tags(*extra: str) -> dict:
     return {"version": 2, "groups": [{"name": "project", "tags": [{"tag": x, "description": x} for x in (PARTITION, "project-beta")]}, {"name": "kind", "tags": [{"tag": x, "description": x} for x in ("research", *extra)]}]}
 def layout(group: str | None = "project", maximum: int = 96) -> dict:
-    return {"version": 4, "partition_tag_group": group, "partition_name_strategy": "tag", "unit_name_strategy": "tag-title-date", "max_component_length": maximum, "duplicate_name_strategy": "reject"}
+    return {"version": 5, "partition_tag_group": group, "partition_name_strategy": "tag", "unit_name_strategy": "tag-title-date", "max_component_length": maximum, "duplicate_name_strategy": "reject"}
 def write(path: Path, value: dict) -> Path: path.write_bytes(json_bytes(value)); return path
 def invoke(capsys, *args: str):
     code = main(["--json", *args]); out = json.loads(capsys.readouterr().out); return code, out
@@ -33,7 +33,9 @@ def test_sc001_sc003_sc005_layout4_add_exact_shape_new_and_existing_partition(tm
     assert partition == PARTITION and first == "project-alpha-alpha-memo-20260821"
     assert sorted(x.name for x in bundle.iterdir()) == ["profiles", PARTITION]
     assert sorted(x.name for x in (bundle / PARTITION).iterdir()) == [first, second]
-    assert sorted(x.name for x in (bundle / PARTITION / first).iterdir()) == ["memo.md", "record.json"]
+    assert sorted(x.name for x in (bundle / PARTITION / first).iterdir()) == ["AGENTS.md", "CLAUDE.md", "assets", "memo.md", "record.json", "src"]
+    assert (bundle / PARTITION / first / "assets/.keep").read_bytes() == b""
+    assert (bundle / PARTITION / first / "src/.keep").read_bytes() == b""
     assert validate_workspace(bundle).valid and validate_workspace(bundle).count == 2
 
 def test_sc001_sc002_full_conversion_bytes_stems_assets_and_zero_mutation(tmp_path, capsys):
@@ -44,12 +46,12 @@ def test_sc001_sc002_full_conversion_bytes_stems_assets_and_zero_mutation(tmp_pa
     unit = bundle / result["data"]["partition"] / result["data"]["record"]
     for relative in ("memo.md", "memo.json", "src/memo.pdf", "assets/opaque/data.bin"): assert (unit / relative).read_bytes() == (conversion / relative).read_bytes()
     before = {path.relative_to(bundle).as_posix(): path.read_bytes() for path in bundle.rglob("*") if path.is_file()}
-    malformed = tmp_path / "malformed"; malformed.mkdir(); (malformed / "memo.md").write_bytes(b"md"); (malformed / "src").mkdir(); (malformed / "src/memo.pdf").write_bytes(source.read_bytes())
+    malformed = tmp_path / "malformed"; malformed.mkdir(); (malformed / "memo.md").write_bytes(b"md"); (malformed / "other.json").write_bytes(b"{}\n"); (malformed / "src").mkdir(); (malformed / "src/memo.pdf").write_bytes(source.read_bytes())
     assert invoke(capsys, "--workspace", str(bundle), "record", "add", "--source", str(source), "--conversion", str(malformed), "--metadata", str(metadata))[0] == 3
     hidden = tmp_path / "hidden"; shutil.copytree(conversion, hidden); (hidden / "assets/.cortex").mkdir(); (hidden / "assets/.cortex/secret").write_bytes(b"bad")
     assert invoke(capsys, "--workspace", str(bundle), "record", "add", "--source", str(source), "--conversion", str(hidden), "--metadata", str(metadata))[1]["issues"][0]["code"] == "reserved_cortex_name"
     wrong_stem = tmp_path / "wrong-stem"; shutil.copytree(conversion, wrong_stem); (wrong_stem / "src/memo.pdf").rename(wrong_stem / "src/other.pdf")
-    assert invoke(capsys, "--workspace", str(bundle), "record", "add", "--source", str(source), "--conversion", str(wrong_stem), "--metadata", str(metadata))[1]["issues"][0]["code"] == "conversion_source_stem_mismatch"
+    assert invoke(capsys, "--workspace", str(bundle), "record", "add", "--source", str(source), "--conversion", str(wrong_stem), "--metadata", str(metadata))[1]["issues"][0]["code"] == "conversion_source_mismatch"
     assert before == {path.relative_to(bundle).as_posix(): path.read_bytes() for path in bundle.rglob("*") if path.is_file()}
     (unit / "assets/.cortex").mkdir(); (unit / "assets/.cortex/secret").write_bytes(b"bad")
     assert any(item["code"] == "reserved_cortex_name" for item in validate_workspace(bundle).issues)
@@ -58,7 +60,7 @@ def test_sc001_sc002_full_conversion_bytes_stems_assets_and_zero_mutation(tmp_pa
 
 def test_sc002_sc004_sc007_add_rejections_are_no_write(tmp_path, capsys):
     bundle = configured(tmp_path, capsys); add_md(bundle, tmp_path, capsys); before = sorted(str(x.relative_to(bundle)) for x in bundle.rglob("*"))
-    source = tmp_path / "bad.pdf"; source.write_bytes(b"pdf"); meta = write(tmp_path / "bad.json", {"title": "Bad", "timestamp": "2026-08-21T00:00:00Z", "tags": [PARTITION]})
+    source = tmp_path / "bad"; source.write_bytes(b"no extension"); meta = write(tmp_path / "bad.json", {"title": "Bad", "timestamp": "2026-08-21T00:00:00Z", "tags": [PARTITION]})
     assert invoke(capsys, "--workspace", str(bundle), "record", "add", "--source", str(source), "--metadata", str(meta))[0] == 3
     duplicate = tmp_path / "dupe.md"; duplicate.write_bytes(b"changed")
     meta = write(tmp_path / "dupe.json", {"title": "Alpha memo", "timestamp": "2026-08-21T00:00:00Z", "tags": [PARTITION, "research"]})
@@ -66,9 +68,9 @@ def test_sc002_sc004_sc007_add_rejections_are_no_write(tmp_path, capsys):
     assert before == sorted(str(x.relative_to(bundle)) for x in bundle.rglob("*"))
 
 def test_sc006_sc008_sc009_profile_contract_and_empty_operability(tmp_path, capsys):
-    assert VERSION == "7.0.0"
+    assert VERSION == "8.0.0"
     bundle = tmp_path / "b"; invoke(capsys, "--workspace", str(bundle), "manage", "init")
-    assert json.loads((bundle / "profiles/layout.json").read_text())["version"] == 4
+    assert json.loads((bundle / "profiles/layout.json").read_text())["version"] == 5
     old = {"version": 3, "unit_name_tag_group": "project", "unit_name_strategy": "tag-title-date", "max_component_length": 96, "duplicate_name_strategy": "reject"}
     code, result = invoke(capsys, "--workspace", str(bundle), "manage", "config", "set", "--profile", "layout", "--file", str(write(tmp_path / "old.json", old)))
     assert code == 3 and result["issues"][0]["code"] in {"unknown_field", "missing_field"}
@@ -230,10 +232,11 @@ def test_sc007_partition_and_unit_casefold_collisions_are_rejected(tmp_path, cap
 
 def test_sc028_sc030_sc031_public_surface_and_fixture():
     root = Path(__file__).parents[1]; fixture = json.loads((root / "fixtures/capabilities/cortex7-surface.json").read_text())
-    assert not any("migrat" in route for route in PUBLIC_ROUTES); assert fixture["version"] == VERSION and fixture["profile_versions"]["layout"] == 4
+    assert not any("migrat" in route for route in PUBLIC_ROUTES); assert fixture["version"] == VERSION and fixture["profile_versions"]["layout"] == 5
     assert fixture["record_operand"] == {"partition": "<exact-partition-tag>", "record": "<exact-unit-name>"}
 
-def test_sc032_sc033_sc034_verification_matrix_is_complete():
+def test_sc030_verification_matrix_is_exact_and_complete():
     text = (Path(__file__).parents[1] / "docs/verification-matrix.md").read_text("utf-8")
-    for number in range(1, 35): assert f"sc{number:03d}" in text
+    ids = [line.split("|")[1].strip() for line in text.splitlines() if line.startswith("| sc-")]
+    assert ids == [f"sc-{number:03d}" for number in range(1, 31)]
     for required in ("candidate under KB root", "candidate under source repo", "same-volume staging", "plan/build only", "no cutover"): assert required in text
