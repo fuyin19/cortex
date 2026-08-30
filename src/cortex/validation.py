@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from .constants import PROFILE_FILENAMES, RECORD_FIELDS, RECORD_SCHEMA
+from .core_runner import CoreRunner, require_core
 from .errors import CortexError, issue
 from .jsonio import json_bytes, loads_object
-from .knowledge_unit import validate_complete_directory
 from .naming import require_naming_runtime, tag_title_date_name
 from .native import component_problem, is_reparse_metadata, native_path
 from .profiles import registered_tags, tag_groups, validate_layout_profile, validate_record, validate_record_schema, validate_tags_profile
@@ -84,30 +84,6 @@ def _component(name: str, label: str, issues: list[dict[str, Any]]) -> None:
         issues.append(issue(problem[0], problem[1], path=label))
 
 
-def _opaque_assets(root: Path, label: str, issues: list[dict[str, Any]]) -> None:
-    folded: dict[str, str] = {}
-    def walk(directory: Path, prefix: str = "") -> None:
-        for entry in _scan(directory, label + ("/" + prefix if prefix else ""), issues):
-            rel = f"{prefix}/{entry.name}" if prefix else entry.name
-            _component(entry.name, f"{label}/{rel}", issues)
-            key = rel.casefold()
-            if key in folded and folded[key] != rel:
-                issues.append(issue("conversion_casefold_collision", "Payload paths collide under case folding", path=label, paths=[folded[key], rel]))
-            folded[key] = rel
-            try:
-                meta = entry.stat(follow_symlinks=False)
-            except OSError as exc:
-                issues.append(issue("path_unreadable", "Payload entry could not be inspected", path=f"{label}/{rel}", os_error=str(exc)))
-                continue
-            if is_reparse_metadata(meta):
-                issues.append(issue("reparse_path", "Links and reparse points are forbidden", path=f"{label}/{rel}"))
-            elif stat.S_ISDIR(meta.st_mode):
-                walk(Path(entry.path), rel)
-            elif not stat.S_ISREG(meta.st_mode):
-                issues.append(issue("nonregular_entry", "Only regular files and real directories are allowed", path=f"{label}/{rel}"))
-    walk(root)
-
-
 def _selected_tag(record: dict[str, Any], tags: dict[str, Any], layout: dict[str, Any], label: str, issues: list[dict[str, Any]]) -> str | None:
     group = layout["partition_tag_group"]
     if group is None:
@@ -125,7 +101,7 @@ def _selected_tag(record: dict[str, Any], tags: dict[str, Any], layout: dict[str
     return selected[0]
 
 
-def validate_record_directory(record_dir: Path, folder: str, *, registered: set[str], maximum: int, partition: str | None = None, label_root: str = "", tags: dict[str, Any] | None = None, layout: dict[str, Any] | None = None, check_folder: bool = True, **_legacy: Any) -> list[dict[str, Any]]:
+def validate_record_directory(record_dir: Path, folder: str, *, registered: set[str], maximum: int, partition: str | None = None, label_root: str = "", tags: dict[str, Any] | None = None, layout: dict[str, Any] | None = None, check_folder: bool = True, core: CoreRunner | None = None, _validate_envelope: bool = True, **_legacy: Any) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     label = f"{label_root}/{folder}".strip("/")
     if check_folder:
@@ -168,23 +144,32 @@ def validate_record_directory(record_dir: Path, folder: str, *, registered: set[
                 except CortexError as exc:
                     issues.append(exc.as_issue())
 
-    try:
-        validate_complete_directory(record_dir, cortex_record=True)
-    except CortexError as exc:
-        nested = exc.details.get("issues")
-        if isinstance(nested, list):
-            issues.extend(item for item in nested if isinstance(item, dict))
-        else:
-            problem = exc.as_issue()
-            if problem.get("path"):
-                problem["path"] = f"{label}/{problem['path']}".rstrip("/")
+    if _validate_envelope:
+        try:
+            require_core(core).validate(record_dir, private_root_files=("record.json",))
+        except CortexError as exc:
+            nested = exc.details.get("issues")
+            if isinstance(nested, list):
+                issues.extend(item for item in nested if isinstance(item, dict))
             else:
-                problem["path"] = label
-            issues.append(problem)
+                problem = exc.as_issue()
+                if problem.get("path"):
+                    problem["path"] = f"{label}/{problem['path']}".rstrip("/")
+                else:
+                    problem["path"] = label
+                issues.append(problem)
     return issues
 
 
-def validate_workspace(workspace: Path, *, locked_record_schema: bytes | None = None, tags_override: dict[str, Any] | None = None, layout_override: dict[str, Any] | None = None) -> ValidationReport:
+def _validate_workspace(
+    workspace: Path,
+    *,
+    locked_record_schema: bytes | None = None,
+    tags_override: dict[str, Any] | None = None,
+    layout_override: dict[str, Any] | None = None,
+    core: CoreRunner | None = None,
+    validate_envelopes: bool,
+) -> ValidationReport:
     workspace = Path(os.path.abspath(workspace))
     issues: list[dict[str, Any]] = []
     if not _is_dir(workspace, ".", issues):
@@ -254,6 +239,7 @@ def validate_workspace(workspace: Path, *, locked_record_schema: bytes | None = 
     registered = registered_tags(tags_value)
     collisions: dict[str, str] = {}
     partition_tags = {item["tag"] for item in groups[group]} if group is not None and group in groups else set()
+    active_core = core
     for entry in roots:
         if entry.name == "profiles":
             continue
@@ -273,14 +259,32 @@ def validate_workspace(workspace: Path, *, locked_record_schema: bytes | None = 
         unit_collisions: dict[str, str] = {}
         for unit in units:
             count += 1
+            if validate_envelopes and active_core is None:
+                active_core = require_core(None)
             unit_key = unit.name.casefold()
             if unit_key in unit_collisions and unit_collisions[unit_key] != unit.name:
                 issues.append(issue("record_casefold_collision", "Record unit names collide under case folding", path=entry.name, names=[unit_collisions[unit_key], unit.name]))
             unit_collisions[unit_key] = unit.name
-            issues.extend(validate_record_directory(Path(unit.path), unit.name, partition=entry.name, label_root=entry.name, registered=registered, maximum=layout_value["max_component_length"], tags=tags_value, layout=layout_value))
+            issues.extend(validate_record_directory(Path(unit.path), unit.name, partition=entry.name, label_root=entry.name, registered=registered, maximum=layout_value["max_component_length"], tags=tags_value, layout=layout_value, core=active_core, _validate_envelope=validate_envelopes))
     if count and group is None:
         issues.append(issue("bundle_not_operational", "A nonempty partition group is required when records exist", path="profiles/layout.json#/partition_tag_group"))
     return ValidationReport(issues, count, tags_value, layout_value)
+
+
+def validate_workspace(workspace: Path, *, locked_record_schema: bytes | None = None, tags_override: dict[str, Any] | None = None, layout_override: dict[str, Any] | None = None, core: CoreRunner | None = None) -> ValidationReport:
+    return _validate_workspace(
+        workspace,
+        locked_record_schema=locked_record_schema,
+        tags_override=tags_override,
+        layout_override=layout_override,
+        core=core,
+        validate_envelopes=True,
+    )
+
+
+def _validate_workspace_product(workspace: Path) -> ValidationReport:
+    """Validate Cortex-owned state while alignment probes Core separately."""
+    return _validate_workspace(workspace, validate_envelopes=False)
 
 
 __all__ = ["ValidationReport", "validate_record_directory", "validate_workspace"]

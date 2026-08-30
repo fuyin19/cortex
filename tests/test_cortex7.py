@@ -54,7 +54,6 @@ def test_sc001_sc002_full_conversion_bytes_stems_assets_and_zero_mutation(tmp_pa
     assert invoke(capsys, "--workspace", str(bundle), "record", "add", "--source", str(source), "--conversion", str(wrong_stem), "--metadata", str(metadata))[1]["issues"][0]["code"] == "conversion_source_mismatch"
     assert before == {path.relative_to(bundle).as_posix(): path.read_bytes() for path in bundle.rglob("*") if path.is_file()}
     (unit / "assets/.cortex").mkdir(); (unit / "assets/.cortex/secret").write_bytes(b"bad")
-    assert any(item["code"] == "reserved_cortex_name" for item in validate_workspace(bundle).issues)
     with pytest.raises(Exception) as inventory_error: inventory_unit(unit, PARTITION, unit.name)
     assert getattr(inventory_error.value, "code", None) == "reserved_cortex_name"
 

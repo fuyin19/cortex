@@ -14,7 +14,7 @@ if str(_SRC) not in sys.path: sys.path.insert(0, str(_SRC))
 from cortex.constants import RECORD_FIELDS, RECORD_SCHEMA, REGISTRY_FILENAME, ROOT_LOCK_FILENAME, VERSION  # noqa: E402
 from cortex.errors import CortexError, issue, validation_error  # noqa: E402
 from cortex.jsonio import json_bytes, loads_object  # noqa: E402
-from cortex.knowledge_unit import finalize_staged, navigation_bytes  # noqa: E402
+from cortex.knowledge_unit import finalize_staged  # noqa: E402
 from cortex.naming import require_naming_runtime, tag_title_date_name  # noqa: E402
 from cortex.native import exists, is_reparse_metadata, native_path, reject_reparse_ancestry, rename_no_replace, require_safe_component  # noqa: E402
 from cortex.profiles import registered_tags, tag_groups, validate_record, validate_tags_profile  # noqa: E402

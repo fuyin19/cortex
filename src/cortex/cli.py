@@ -8,7 +8,9 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+from .alignment import apply_alignment, plan_alignment
 from .constants import PUBLIC_ROUTES, VERSION
+from .core_runner import CoreRunner
 from .errors import CortexError, Status, io_error
 from .service import CortexService, Outcome, RegistryService
 
@@ -26,6 +28,12 @@ def _parser() -> ContractParser:
     parser.add_argument("--bundle-id", help="explicit registered Bundle id")
     parser.add_argument("--version", action="version", version=f"cortex {VERSION}")
     groups = parser.add_subparsers(dest="group", required=True)
+
+    align = groups.add_parser("align")
+    align_commands = align.add_subparsers(dest="align_command", required=True)
+    align_commands.add_parser("plan")
+    align_apply = align_commands.add_parser("apply")
+    align_apply.add_argument("--plan", required=True)
 
     registry = groups.add_parser("registry")
     registry_commands = registry.add_subparsers(dest="registry_command", required=True)
@@ -70,7 +78,9 @@ def _parser() -> ContractParser:
 
 
 def _route(args: argparse.Namespace) -> str:
-    if args.group == "registry":
+    if args.group == "align":
+        route = f"align.{args.align_command}"
+    elif args.group == "registry":
         route = f"registry.{args.registry_command}"
     elif args.group == "manage":
         if args.manage_command == "config":
@@ -85,10 +95,19 @@ def _route(args: argparse.Namespace) -> str:
 
 
 def _dispatch(route: str, args: argparse.Namespace) -> Outcome:
+    if route == "align.plan":
+        if args.workspace is None or args.kb_root is not None or args.bundle_id is not None:
+            raise CortexError("align plan requires only --workspace", status=Status.USAGE_ERROR, code="invalid_selector")
+        return Outcome(data={"plan": plan_alignment(Path(args.workspace), CoreRunner.from_config())})
+    if route == "align.apply":
+        if args.workspace is not None or args.kb_root is not None or args.bundle_id is not None:
+            raise CortexError("align apply requires only --plan", status=Status.USAGE_ERROR, code="invalid_selector")
+        return Outcome(data=apply_alignment(args.plan, CoreRunner.from_config()))
+
     if route.startswith("registry."):
         if args.workspace is not None or args.kb_root is None or args.bundle_id is not None:
             raise CortexError("Registry routes require only --kb-root", status=Status.USAGE_ERROR, code="invalid_selector")
-        service = RegistryService(Path(args.kb_root))
+        service = RegistryService(Path(args.kb_root), core=CoreRunner.from_config())
         if route == "registry.show":
             return service.show()
         if route == "registry.validate":
@@ -107,16 +126,17 @@ def _dispatch(route: str, args: argparse.Namespace) -> Outcome:
     if args.workspace is not None:
         if args.kb_root is not None or args.bundle_id is not None:
             raise CortexError("Use either --workspace or --kb-root with --bundle-id", status=Status.USAGE_ERROR, code="invalid_selector")
-        service = CortexService(Path(args.workspace))
+        service = CortexService(Path(args.workspace), core=CoreRunner.from_config())
     else:
         if args.kb_root is None or args.bundle_id is None:
             raise CortexError("Managed bundle routes require --kb-root and --bundle-id", status=Status.USAGE_ERROR, code="bundle_selection_required")
         if route in {"manage.config.set", "record.add", "record.edit", "record.show", "record.delete"}:
-            service = CortexService(None, kb_root=Path(args.kb_root), bundle_id=args.bundle_id)
+            service = CortexService(None, kb_root=Path(args.kb_root), bundle_id=args.bundle_id, core=CoreRunner.from_config())
         else:
-            registry_service = RegistryService(Path(args.kb_root))
+            core = CoreRunner.from_config()
+            registry_service = RegistryService(Path(args.kb_root), core=core)
             resolved = registry_service.resolve(args.bundle_id).data
-            service = CortexService(Path(resolved["workspace"]), kb_root=Path(args.kb_root), bundle_id=args.bundle_id)
+            service = CortexService(Path(resolved["workspace"]), kb_root=Path(args.kb_root), bundle_id=args.bundle_id, core=core)
     if route == "manage.status":
         return service.status()
     if route == "manage.validate":

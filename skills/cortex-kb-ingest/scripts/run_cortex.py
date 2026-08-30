@@ -17,7 +17,7 @@ import zipfile
 EXPECTED_VERSION = "8.0.0"
 EXPECTED_DISTRIBUTION = "cortex-record-kb"
 EXPECTED_WHEEL_FILENAME = "cortex_record_kb-8.0.0-py3-none-any.whl"
-EXPECTED_WHEEL_SHA256 = "b9022bf869a3ddc646a9f24853fc141b8749d3454c357f8a3465f23feb063ab5"
+EXPECTED_WHEEL_SHA256 = "ced95a33752b98df41087d95b9a367865f4a2249a300c6dcc05178b96d246dce"
 EXPECTED_MANIFEST_KEYS = {
     "schema_version", "distribution", "import", "version", "wheel",
     "wheel_sha256", "python", "isolation",

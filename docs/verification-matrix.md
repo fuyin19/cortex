@@ -4,7 +4,7 @@ The scenario identifiers and scope below are the frozen acceptance baseline. The
 
 | Scenario | Frozen semantic | Evidence |
 |---|---|---|
-| sc-001 | Both repositories vendor the exact standalone navigation bytes and hashes. | `tests/knowledge-unit/test_envelope.py`; `tests/test_knowledge_unit.py` |
+| sc-001 | Cortex uses only the explicit absolute anti-entropy Core runner for base-envelope operations, with no vendored or runtime fallback authority. | Core envelope suite; `tests/test_knowledge_unit.py` |
 | sc-002 | Default Markdown conversion publishes the complete base envelope. | Markdown conversion bundle tests |
 | sc-003 | Default PDF conversion publishes the same complete base envelope. | PDF conversion bundle tests |
 | sc-004 | Default file conversion delegates to a complete base-envelope result. | File conversion router tests |
@@ -31,7 +31,7 @@ The scenario identifiers and scope below are the frozen acceptance baseline. The
 | sc-025 | Frozen versions and three byte-identical packaged Cortex 8 wheels are exact and offline. | Version tests; `tests/test_skill_runtime.py`; packager `--check` |
 | sc-026 | Scoped EOL rules and a disposable Git clone preserve exact LF/marker behavior. | Generator `check-attr`/raw-byte checks; exact candidate materialization in a disposable clone is reserved for official Testing |
 | sc-027 | An actual producer bundle is accepted by packaged Cortex end to end. | Task-local producer-to-packaged-runtime integration |
-| sc-028 | Documentation and both root guidance files describe independent vendoring and the same contract boundary. | Documentation/guidance assertions and resource hash checks |
+| sc-028 | Documentation and root guidance describe the explicit external Core boundary, runner requirement, and manage-owned alignment routes. | Documentation/guidance assertions and runtime contract tests |
 | sc-029 | The Chinese feasibility memo contains the frozen decision matrix, triggers, migration path, and no-central-runtime recommendation. | Candidate memo content/hash verification |
 | sc-030 | Disposable multi-repository fault/resume, pre-cleanup verification, and cleanup leave only intended deliverables. | Task-local closeout verification |
 
@@ -39,7 +39,7 @@ Repository boundary vocabulary: candidate under KB root; candidate under source 
 
 | Runtime scenario | Frozen semantic |
 |---|---|
-| runtime-sc001 | Each of three complete KB skill copies runs Cortex 8.0.0 independently. |
+| runtime-sc001 | Each of three KB skill copies runs Cortex 8.0.0 with the explicitly configured external Core runner. |
 | runtime-sc002 | All three KB skills carry byte-identical runner, manifest, and wheel payloads. |
 | runtime-sc003 | PATH Cortex 4 sentinels are never invoked. |
 | runtime-sc004 | Hostile PYTHONPATH and ambient Cortex modules are ignored by isolated launch. |
@@ -52,7 +52,7 @@ Repository boundary vocabulary: candidate under KB root; candidate under source 
 | runtime-sc011 | The Cortex 8 public routes, package version, and source CLI contract remain closed. |
 | runtime-sc012 | Source and all three bundled KB runtimes produce equal Results and disposable Bundle trees. |
 | runtime-sc013 | Skills, documentation, capability fixture, and runtime scenario mapping agree. |
-| runtime-sc014 | CORTEX_PYTHON binds the exact Python 3.11/UCD 14 executable before dispatch; missing, relative, Python 3.12, and wrong-file values fail before mutation. |
+| runtime-sc014 | CORTEX_PYTHON binds the exact Python 3.11/UCD 14 executable, and non-init routes require an explicit absolute ANTI_ENTROPY_CORE_RUNNER; invalid configuration fails before mutation. |
 | runtime-sc015 | Human stdout and stderr are UTF-8 while compact JSON Result bytes retain ASCII escaping and shape. |
 | runtime-sc016 | The ingest skill helper accepts full and Markdown-only items and returns one ordered wrapper summary; manage and build have none. |
 | runtime-sc017 | The ingest helper collects a valid middle Cortex failure and continues later batch items sequentially. |

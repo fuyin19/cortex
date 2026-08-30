@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .constants import PROFILE_FILENAMES, REGISTRY_FILENAME, REGISTRY_VERSION, ROOT_LOCK_FILENAME
+from .core_runner import CoreRunner
 from .errors import CortexError, issue, validation_error
 from .jsonio import json_bytes, loads_object
 from .native import component_problem, exists, is_reparse_metadata, native_path
@@ -121,7 +122,7 @@ def _complete_profiles(directory: Path) -> bool:
         return False
 
 
-def validate_registry(root: Path, *, value_override: dict[str, Any] | None = None, payload_override: bytes | None = None) -> RegistryReport:
+def validate_registry(root: Path, *, value_override: dict[str, Any] | None = None, payload_override: bytes | None = None, core: CoreRunner | None = None) -> RegistryReport:
     root = Path(os.path.abspath(root))
     problems: list[dict[str, Any]] = []
     try:
@@ -170,7 +171,7 @@ def validate_registry(root: Path, *, value_override: dict[str, Any] | None = Non
     registered = {entry["path"] for entry in canonical["bundles"]}
     for entry in canonical["bundles"]:
         target = root / entry["path"]
-        report = validate_workspace(target)
+        report = validate_workspace(target, core=core)
         if not report.valid:
             problems.append(issue("invalid_registered_bundle", "Registered target must be a valid Cortex Bundle", path=entry["path"], issues=report.issues))
     try:
@@ -201,8 +202,8 @@ def validate_transition(previous: dict[str, Any], candidate: dict[str, Any]) -> 
     return problems
 
 
-def require_registry(root: Path) -> dict[str, Any]:
-    report = validate_registry(root)
+def require_registry(root: Path, *, core: CoreRunner | None = None) -> dict[str, Any]:
+    report = validate_registry(root, core=core)
     if report.issues:
         first = report.issues[0]
         raise validation_error(first["message"], first["code"], path=first.get("path"), issues=report.issues)
@@ -210,8 +211,8 @@ def require_registry(root: Path) -> dict[str, Any]:
     return report.value
 
 
-def resolve_bundle(root: Path, bundle_id: str, *, registry: dict[str, Any] | None = None) -> dict[str, Any]:
-    value = require_registry(root) if registry is None else registry
+def resolve_bundle(root: Path, bundle_id: str, *, registry: dict[str, Any] | None = None, core: CoreRunner | None = None) -> dict[str, Any]:
+    value = require_registry(root, core=core) if registry is None else registry
     for entry in value["bundles"]:
         if entry["id"] == bundle_id:
             return entry

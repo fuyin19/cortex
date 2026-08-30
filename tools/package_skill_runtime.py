@@ -54,7 +54,7 @@ def _source_files(root: Path) -> list[tuple[str, bytes]]:
     items: list[tuple[str, bytes]] = []
     selected = [
         path for path in package.rglob("*")
-        if path.is_file() and (path.suffix == ".py" or "resources/knowledge-unit" in path.as_posix())
+        if path.is_file() and path.suffix == ".py"
     ]
     for path in sorted(selected, key=lambda value: value.relative_to(package).as_posix().encode("utf-8")):
         if path.is_symlink() or not path.is_file():

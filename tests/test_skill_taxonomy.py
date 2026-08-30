@@ -13,6 +13,7 @@ NOTES = ("cortex-notes-ingest", "cortex-notes-build", "cortex-notes-manage")
 ROLES = (*CANONICAL, *NOTES)
 ROUTER = "cortex"
 WRITE_OWNERS = {
+    "align.apply": "cortex-kb-manage",
     "manage.init": "cortex-kb-build",
     "manage.config.set": "cortex-kb-build",
     "registry.set": "cortex-kb-build",
@@ -115,6 +116,7 @@ def test_taxonomy_sc006_first_failure_stops_and_reports_late_residue() -> None:
 def test_taxonomy_sc007_core_runtime_is_invariant_and_plugin_is_v9() -> None:
     assert VERSION == "8.0.0"
     assert tuple(PUBLIC_ROUTES) == (
+        "align.plan", "align.apply",
         "registry.show", "registry.validate", "registry.resolve", "registry.set",
         "manage.init", "manage.status", "manage.validate", "manage.config.show", "manage.config.set",
         "record.add", "record.edit", "record.show", "record.delete",

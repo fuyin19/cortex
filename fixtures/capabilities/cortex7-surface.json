@@ -2,7 +2,7 @@
   "distribution": "cortex-record-kb",
   "import": "cortex",
   "version": "8.0.0",
-  "routes": ["registry.show", "registry.validate", "registry.resolve", "registry.set", "manage.init", "manage.status", "manage.validate", "manage.config.show", "manage.config.set", "record.add", "record.edit", "record.show", "record.delete"],
+  "routes": ["align.plan", "align.apply", "registry.show", "registry.validate", "registry.resolve", "registry.set", "manage.init", "manage.status", "manage.validate", "manage.config.show", "manage.config.set", "record.add", "record.edit", "record.show", "record.delete"],
   "profiles": ["record-schema.json", "tags.json", "layout.json"],
   "profile_versions": {"record": 1, "tag": 2, "layout": 5, "registry": 1},
   "partition_name_strategy": "tag",
@@ -11,13 +11,14 @@
   "tree_digest": "CORTEX_UNIT_TREE_V2",
   "delete_precondition": "expected-tree-sha256",
   "public_migration_route": false,
-  "agent_entrypoint": "CORTEX_PYTHON absolute-python-3.11-ucd14 -I skill-local-runner",
+  "agent_entrypoint": "CORTEX_PYTHON absolute-python-3.11-ucd14 -I skill-local-runner; ANTI_ENTROPY_CORE_RUNNER absolute-core-runner",
   "global_command": false,
   "skill_taxonomy": {
     "router": "cortex",
     "canonical": ["cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage"],
     "canonical_roles": ["cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage", "cortex-notes-ingest", "cortex-notes-build", "cortex-notes-manage"],
     "write_owners": {
+      "align.apply": "cortex-kb-manage",
       "manage.init": "cortex-kb-build",
       "manage.config.set": "cortex-kb-build",
       "registry.set": "cortex-kb-build",
@@ -39,6 +40,6 @@
     "router_runtime": false,
     "enforcement": "skill-contract-only"
   },
-  "skill_runtime": {"skills": ["cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage"], "artifact": "cortex_record_kb-8.0.0-py3-none-any.whl", "offline": true, "independently_complete": true, "payloads_byte_identical": true, "required_environment": "CORTEX_PYTHON", "human_stream_encoding": "utf-8", "json_ascii_escaping": true, "windows_launcher": "run_cortex.cmd"},
+  "skill_runtime": {"skills": ["cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage"], "artifact": "cortex_record_kb-8.0.0-py3-none-any.whl", "offline": true, "independently_complete": false, "payloads_byte_identical": true, "required_environment": ["CORTEX_PYTHON", "ANTI_ENTROPY_CORE_RUNNER"], "human_stream_encoding": "utf-8", "json_ascii_escaping": true, "windows_launcher": "run_cortex.cmd"},
   "batch_helper": {"skills": ["cortex-kb-ingest"], "script": "batch_record_add.py", "schema_version": 1, "command": "record.add.batch", "core_route": false, "sequential": true, "rollback": false}
 }

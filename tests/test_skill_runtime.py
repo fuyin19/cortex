@@ -29,7 +29,7 @@ PAYLOAD_PATHS = (
     Path("scripts/vendor") / WHEEL_NAME,
 )
 RUNTIME_SCENARIOS = {
-    "runtime-sc001": "Each of three complete KB skill copies runs Cortex 8.0.0 independently.",
+    "runtime-sc001": "Each of three KB skill copies runs Cortex 8.0.0 with the explicitly configured external Core runner.",
     "runtime-sc002": "All three KB skills carry byte-identical runner, manifest, and wheel payloads.",
     "runtime-sc003": "PATH Cortex 4 sentinels are never invoked.",
     "runtime-sc004": "Hostile PYTHONPATH and ambient Cortex modules are ignored by isolated launch.",
@@ -42,7 +42,7 @@ RUNTIME_SCENARIOS = {
     "runtime-sc011": "The Cortex 8 public routes, package version, and source CLI contract remain closed.",
     "runtime-sc012": "Source and all three bundled KB runtimes produce equal Results and disposable Bundle trees.",
     "runtime-sc013": "Skills, documentation, capability fixture, and runtime scenario mapping agree.",
-    "runtime-sc014": "CORTEX_PYTHON binds the exact Python 3.11/UCD 14 executable before dispatch; missing, relative, Python 3.12, and wrong-file values fail before mutation.",
+    "runtime-sc014": "CORTEX_PYTHON binds the exact Python 3.11/UCD 14 executable, and non-init routes require an explicit absolute ANTI_ENTROPY_CORE_RUNNER; invalid configuration fails before mutation.",
     "runtime-sc015": "Human stdout and stderr are UTF-8 while compact JSON Result bytes retain ASCII escaping and shape.",
     "runtime-sc016": "The ingest skill helper accepts full and Markdown-only items and returns one ordered wrapper summary; manage and build have none.",
     "runtime-sc017": "The ingest helper collects a valid middle Cortex failure and continues later batch items sequentially.",
@@ -307,6 +307,7 @@ def test_runtime_sc010_disposable_projection_has_no_launcher(tmp_path: Path) -> 
 def test_runtime_sc011_source_contract_is_unchanged() -> None:
     assert VERSION == "8.0.0"
     assert tuple(PUBLIC_ROUTES) == (
+        "align.plan", "align.apply",
         "registry.show", "registry.validate", "registry.resolve", "registry.set",
         "manage.init", "manage.status", "manage.validate", "manage.config.show", "manage.config.set",
         "record.add", "record.edit", "record.show", "record.delete",
@@ -355,14 +356,14 @@ def test_runtime_sc012_source_and_bundles_have_equal_results_and_trees(tmp_path:
 def test_runtime_sc013_surfaces_and_exact_mapping_agree() -> None:
     fixture = json.loads((ROOT / "fixtures" / "capabilities" / "cortex7-surface.json").read_text("utf-8"))
     assert fixture["global_command"] is False
-    assert fixture["agent_entrypoint"] == "CORTEX_PYTHON absolute-python-3.11-ucd14 -I skill-local-runner"
+    assert fixture["agent_entrypoint"] == "CORTEX_PYTHON absolute-python-3.11-ucd14 -I skill-local-runner; ANTI_ENTROPY_CORE_RUNNER absolute-core-runner"
     assert fixture["skill_runtime"] == {
         "skills": list(SKILL_NAMES),
         "artifact": WHEEL_NAME,
         "offline": True,
-        "independently_complete": True,
+        "independently_complete": False,
         "payloads_byte_identical": True,
-        "required_environment": "CORTEX_PYTHON",
+        "required_environment": ["CORTEX_PYTHON", "ANTI_ENTROPY_CORE_RUNNER"],
         "human_stream_encoding": "utf-8",
         "json_ascii_escaping": True,
         "windows_launcher": "run_cortex.cmd",

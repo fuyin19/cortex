@@ -1,1 +1,1 @@
-{"distribution":"cortex-record-kb","import":"cortex","isolation":"-I","python":"3.11","schema_version":1,"version":"8.0.0","wheel":"cortex_record_kb-8.0.0-py3-none-any.whl","wheel_sha256":"b9022bf869a3ddc646a9f24853fc141b8749d3454c357f8a3465f23feb063ab5"}
+{"distribution":"cortex-record-kb","import":"cortex","isolation":"-I","python":"3.11","schema_version":1,"version":"8.0.0","wheel":"cortex_record_kb-8.0.0-py3-none-any.whl","wheel_sha256":"ced95a33752b98df41087d95b9a367865f4a2249a300c6dcc05178b96d246dce"}

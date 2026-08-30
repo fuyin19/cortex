@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .constants import DEFAULT_LAYOUT, DEFAULT_TAGS, RECORD_FIELDS, RECORD_SCHEMA, REGISTRY_FILENAME, ROOT_LOCK_FILENAME, VERSION
+from .core_runner import CoreRunner, require_core
 from .errors import CortexError, Status, io_error, usage_error, validation_error
 from .jsonio import json_bytes, loads_object, read_json_operand
-from .knowledge_unit import finalize_staged, inspect_input
 from .locking import writer_lock, workspace_lock_path
 from .naming import tag_title_date_name
 from .native import (
@@ -214,13 +214,37 @@ def _safe_source(source_text: str | None) -> Path | None:
 
 def _safe_conversion(
     conversion_text: str | None,
+    core: CoreRunner,
 ) -> tuple[Path | None, list[tuple[str, Path, bool]] | None, Path | None]:
     if conversion_text is None:
         return None, None, None
     if conversion_text == "-":
         raise usage_error("--conversion does not support stdin", "conversion_stdin_unsupported")
     conversion = Path(os.path.abspath(conversion_text))
-    entries, _stem, retained_source = inspect_input(conversion)
+    core.inspect(conversion)
+    kind, entries = inspect_conversion(conversion)
+    if kind != "directory":
+        raise validation_error("--conversion must name a real directory", "conversion_directory_required", path=str(conversion))
+    record_matches = [
+        relative
+        for relative, _path, _is_directory in entries
+        if relative.casefold() == "record.json"
+    ]
+    if record_matches:
+        raise validation_error(
+            "Converter payload must not contain reserved Cortex record.json",
+            "reserved_record_metadata",
+            path=record_matches[0],
+        )
+    retained = [
+        path
+        for relative, path, is_directory in entries
+        if not is_directory
+        and relative.startswith("src/")
+        and relative.count("/") == 1
+        and Path(relative).name != ".keep"
+    ]
+    retained_source = retained[0] if len(retained) == 1 else None
     return conversion, entries, retained_source
 
 
@@ -235,6 +259,27 @@ def _match_retained_source(source: Path | None, retained: Path | None) -> None:
         )
 
 
+def _integrate_source(stage: Path, source: Path | None, retained: Path | None) -> None:
+    """Apply Cortex's explicit source choice before Core completes the envelope."""
+    if source is None or retained is not None:
+        return
+    src = stage / "src"
+    if not exists(src):
+        src.mkdir(exist_ok=False)
+    else:
+        require_real_directory(src, code="invalid_source_directory")
+    children = checked_scandir(src)
+    if children:
+        if len(children) != 1 or children[0].name != ".keep":
+            raise validation_error("src/ is not empty", "invalid_source_directory", path="src")
+        marker = Path(children[0].path)
+        require_regular_file(marker, code="invalid_empty_marker")
+        if marker.stat().st_size != 0:
+            raise validation_error("src/.keep must be zero-byte", "invalid_empty_marker", path="src/.keep")
+        marker.unlink()
+    copy_regular(source, src / source.name)
+
+
 def _require_initialized_lock_target(workspace: Path) -> None:
     target = workspace / "profiles" / "record-schema.json"
     if not exists(target):
@@ -243,12 +288,17 @@ def _require_initialized_lock_target(workspace: Path) -> None:
 
 
 class CortexService:
-    def __init__(self, workspace: Path | str | None, *, kb_root: Path | str | None = None, bundle_id: str | None = None) -> None:
+    def __init__(self, workspace: Path | str | None, *, kb_root: Path | str | None = None, bundle_id: str | None = None, core: CoreRunner | None = None) -> None:
         self.workspace = Path(os.path.abspath(workspace)) if workspace is not None else None
         self.kb_root = Path(os.path.abspath(kb_root)) if kb_root is not None else None
         self.bundle_id = bundle_id
+        self.core = core
         if self.workspace is None and (self.kb_root is None or self.bundle_id is None):
             raise ValueError("An unresolved service requires both kb_root and bundle_id")
+
+    def _core(self) -> CoreRunner:
+        self.core = require_core(self.core)
+        return self.core
 
     def _lock_path(self) -> Path:
         if self.kb_root is not None:
@@ -260,8 +310,8 @@ class CortexService:
         if self.kb_root is None:
             return
         assert self.bundle_id is not None
-        registry = require_registry(self.kb_root)
-        entry = resolve_bundle(self.kb_root, self.bundle_id, registry=registry)
+        registry = require_registry(self.kb_root, core=self._core())
+        entry = resolve_bundle(self.kb_root, self.bundle_id, registry=registry, core=self._core())
         selected = self.kb_root / entry["path"]
         if self.workspace is None:
             self.workspace = selected
@@ -282,7 +332,7 @@ class CortexService:
             if lock_path == self.workspace / "profiles" / "record-schema.json":
                 lock_stream.seek(0)
                 locked_schema = lock_stream.read()
-            report = validate_workspace(self.workspace, locked_record_schema=locked_schema)
+            report = validate_workspace(self.workspace, locked_record_schema=locked_schema, core=self._core())
             _raise_invalid_report(report)
             yield report
 
@@ -323,18 +373,18 @@ class CortexService:
         return Outcome(data={"version": VERSION, "partition_tag_group": None})
 
     def status(self) -> Outcome:
-        report = validate_workspace(self.workspace)
+        report = validate_workspace(self.workspace, core=self._core())
         return Outcome(data={"version": VERSION, "valid": report.valid, "count": report.count})
 
     def validate(self) -> Outcome:
-        report = validate_workspace(self.workspace)
+        report = validate_workspace(self.workspace, core=self._core())
         data = {"version": VERSION, "valid": report.valid, "count": report.count}
         if report.valid:
             return Outcome(data=data)
         return Outcome(status=Status.VALIDATION_ERROR, data=data, issues=report.issues)
 
     def config_show(self, profile: str) -> Outcome:
-        report = validate_workspace(self.workspace)
+        report = validate_workspace(self.workspace, core=self._core())
         _raise_invalid_report(report)
         value = RECORD_SCHEMA if profile == "record" else report.tags if profile == "tags" else report.layout
         assert value is not None
@@ -353,6 +403,7 @@ class CortexService:
                 locked_record_schema=json_bytes(RECORD_SCHEMA),
                 tags_override=value if profile == "tags" else None,
                 layout_override=value if profile == "layout" else None,
+                core=self._core(),
             )
             _raise_invalid_report(candidate_report)
             return self._set_profile(profile, value)
@@ -375,7 +426,7 @@ class CortexService:
         metadata, _ = read_json_operand(metadata_operand)
         _precheck_metadata_shape(metadata)
         preflight_source = _safe_source(source_operand)
-        _, _preflight_entries, preflight_retained = _safe_conversion(conversion_operand)
+        _, _preflight_entries, preflight_retained = _safe_conversion(conversion_operand, self._core())
         _match_retained_source(preflight_source, preflight_retained)
         with self._mutation_report() as report:
             assert report.tags is not None and report.layout is not None
@@ -387,7 +438,7 @@ class CortexService:
             record = _complete_metadata(metadata, registered, auto_timestamp=False)
             naming_tag, _naming_tags = _naming_tag_for_record(record, report.tags, report.layout)
             source = _safe_source(source_operand)
-            _, conversion_entries, retained_source = _safe_conversion(conversion_operand)
+            _, conversion_entries, retained_source = _safe_conversion(conversion_operand, self._core())
             _match_retained_source(source, retained_source)
             if conversion_entries is None:
                 assert source is not None
@@ -436,10 +487,9 @@ class CortexService:
                 else:
                     assert source is not None
                     copy_regular(source, staged_unit / source.name)
-                finalize_staged(
-                    staged_unit,
-                    source=source if conversion_entries is not None else None,
-                )
+                if conversion_entries is not None:
+                    _integrate_source(staged_unit, source, retained_source)
+                self._core().stage_complete(staged_unit, private_root_files=("record.json",))
                 problems = validate_record_directory(
                     staged_unit,
                     folder,
@@ -450,6 +500,7 @@ class CortexService:
                     tags=report.tags,
                     layout=layout,
                     check_folder=False,
+                    core=self._core(),
                 )
                 if problems:
                     first = problems[0]
@@ -563,15 +614,20 @@ class CortexService:
 
 
 class RegistryService:
-    def __init__(self, root: Path | str) -> None:
+    def __init__(self, root: Path | str, *, core: CoreRunner | None = None) -> None:
         self.root = Path(os.path.abspath(root))
+        self.core = core
+
+    def _core(self) -> CoreRunner:
+        self.core = require_core(self.core)
+        return self.core
 
     def show(self) -> Outcome:
-        value = require_registry(self.root)
+        value = require_registry(self.root, core=self._core())
         return Outcome(data={"registry": value})
 
     def validate(self) -> Outcome:
-        report = validate_registry(self.root)
+        report = validate_registry(self.root, core=self._core())
         count = len(report.value["bundles"]) if report.value is not None and isinstance(report.value.get("bundles"), list) else 0
         data = {"version": VERSION, "valid": report.valid, "bundles": count}
         if report.valid:
@@ -579,12 +635,12 @@ class RegistryService:
         return Outcome(status=Status.VALIDATION_ERROR, data=data, issues=report.issues)
 
     def resolve(self, bundle_id: str) -> Outcome:
-        registry = require_registry(self.root)
-        entry = resolve_bundle(self.root, bundle_id, registry=registry)
+        registry = require_registry(self.root, core=self._core())
+        entry = resolve_bundle(self.root, bundle_id, registry=registry, core=self._core())
         return Outcome(data={"bundle_id": entry["id"], "path": entry["path"], "workspace": str(self.root / entry["path"]), "description": entry["description"]})
 
     def _current_for_candidate(self, candidate: dict[str, Any]) -> dict[str, Any]:
-        report = validate_registry(self.root)
+        report = validate_registry(self.root, core=self._core())
         candidate_paths = {entry["path"] for entry in candidate["bundles"]}
         blocking = [
             item
@@ -611,7 +667,7 @@ class RegistryService:
             if transition_problems:
                 first = transition_problems[0]
                 raise validation_error(first["message"], first["code"], path=first.get("path"), issues=transition_problems)
-        static = validate_registry(self.root, value_override=candidate_input)
+        static = validate_registry(self.root, value_override=candidate_input, core=self._core())
         if static.issues:
             first = static.issues[0]
             raise validation_error(first["message"], first["code"], path=first.get("path"), issues=static.issues)
@@ -635,7 +691,7 @@ class RegistryService:
             raise io_error("KB-root lock could not be inspected", "lock_target_unreadable", path=str(lock_path), os_error=str(exc)) from exc
         with writer_lock(lock_path):
             candidate_input = _read_operand_again(operand, candidate)
-            checked = validate_registry(self.root, value_override=candidate_input)
+            checked = validate_registry(self.root, value_override=candidate_input, core=self._core())
             if checked.issues:
                 first = checked.issues[0]
                 raise validation_error(first["message"], first["code"], path=first.get("path"), issues=checked.issues)

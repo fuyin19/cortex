@@ -6,6 +6,8 @@ VERSION = "8.0.0"
 DIST_NAME = "cortex-record-kb"
 
 PUBLIC_ROUTES = (
+    "align.plan",
+    "align.apply",
     "registry.show",
     "registry.validate",
     "registry.resolve",
