@@ -36,22 +36,23 @@ Do not treat an invalid, partially initialized, linked, nonordinary, or otherwis
 
 Read current canonical profile and Registry bytes before constructing complete candidates. Reject every contraction or reassignment before the first write.
 
-- Tag 2 is keyed by group `name`, then tag `tag`. Retain every existing group, every existing tag, and every existing tag's group membership. Candidates may add groups or tags and may edit descriptions only; they must not remove, rename, move, or otherwise replace a keyed member.
+- Tag 2 is keyed by group `name`, then tag `tag`. Retain every existing group and tag in exact relative order and retain every existing tag's group membership. Append new groups to the `groups` array and new tags to the end of their group's `tags` array. Candidates may add groups or tags and may edit descriptions only; they must not remove, rename, move, reorder, or otherwise replace a keyed member.
 - Registry 1 is keyed by bundle `id`. Retain every existing `id` to exact `path` mapping. Candidates may add id-to-path pairs and may edit descriptions only; they must not remove an id or reassign its path.
-- For a **populated** Bundle, Tag 2 and Layout 5 must remain byte-identical. The only permitted build write is a keyed-monotonic Registry expansion or description edit.
+- For a **populated** Bundle, Tag 2 may change only under the keyed-monotonic rule and Layout 5 must remain byte-identical. The permitted build writes are a complete keyed-monotonic Tag 2 candidate and a keyed-monotonic Registry candidate.
 - For **empty configured**, retain the exact `partition_tag_group`, `partition_name_strategy`, `unit_name_strategy`, and `duplicate_name_strategy`; retain Tag 2 under the keyed rule; and keep `max_component_length` the same or increase it within Layout 5 bounds.
 - For **empty null sentinel**, retain both naming strategies and `duplicate_name_strategy`; retain Tag 2 under the keyed rule; then change null only to an explicit existing candidate Tag 2 group that contains at least one tag. Keep `max_component_length` the same or increase it within Layout 5 bounds. Null may not remain the final configured state when the session is intended for ingestion.
 
-Compare canonical bytes as well as parsed values wherever byte identity is required. A proposed removal, rename, move, registry reassignment, strategy change, group change on configured Layout 5, maximum decrease, populated profile rewrite, or null-to-missing/empty group is a contraction. Report it and perform no write.
+Compare canonical bytes as well as parsed values wherever byte identity is required. A proposed removal, rename, move, reorder, registry reassignment, strategy change, group change on configured Layout 5, maximum decrease, populated Layout 5 rewrite, or null-to-missing/empty group is a contraction. Report it and perform no write.
 
 ## Ordered execution
 
 Plan the complete ordered step list before invoking the first write.
 
 1. For a **new** workspace, invoke `manage.init` first, then continue as the resulting empty null-sentinel case.
-2. For **empty configured** with a `max_component_length` increase, set the complete Layout 5 candidate before the complete Tag 2 candidate, so newly admitted longer keys validate. With the same maximum, set Tag 2 before Layout 5 when a profile write is needed.
-3. For **empty null sentinel**, set the complete Tag 2 candidate first, then set Layout 5 from null to the explicit existing candidate group; this tags-before-layout order applies even when the maximum increases.
-4. Invoke `registry.set` only after all requested Bundle profile steps succeed.
+2. For a **populated** Bundle, set the complete Tag 2 candidate when it differs; never write Layout 5.
+3. For **empty configured** with a `max_component_length` increase, set the complete Layout 5 candidate before the complete Tag 2 candidate, so newly admitted longer keys validate. With the same maximum, set Tag 2 before Layout 5 when a profile write is needed.
+4. For **empty null sentinel**, set the complete Tag 2 candidate first, then set Layout 5 from null to the explicit existing candidate group; this tags-before-layout order applies even when the maximum increases.
+5. Invoke `registry.set` only after all requested Bundle profile steps succeed.
 
 Omit a profile or Registry write when its complete candidate bytes already equal the current canonical bytes. Each invocation uses `--json`; accept only one well-formed core Result with matching command and exit code.
 

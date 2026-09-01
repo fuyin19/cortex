@@ -13,6 +13,7 @@
   "public_migration_route": false,
   "agent_entrypoint": "CORTEX_PYTHON absolute-python-3.11-ucd14 -I skill-local-runner; ANTI_ENTROPY_CORE_RUNNER absolute-core-runner",
   "global_command": false,
+  "build_profile_policy": {"tag_transition": "keyed-monotonic-append", "description_edits": true, "populated_layout": "byte-identical"},
   "skill_taxonomy": {
     "router": "cortex",
     "canonical": ["cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage"],

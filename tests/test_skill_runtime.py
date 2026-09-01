@@ -47,6 +47,7 @@ RUNTIME_SCENARIOS = {
     "runtime-sc016": "The ingest skill helper accepts full and Markdown-only items and returns one ordered wrapper summary; manage and build have none.",
     "runtime-sc017": "The ingest helper collects a valid middle Cortex failure and continues later batch items sequentially.",
     "runtime-sc018": "The ingest helper rejects malformed jobs, duplicate ids, and relative item paths before any runner call or Bundle mutation.",
+    "runtime-sc019": "A populated Bundle accepts a complete keyed-monotonic Tag 2 expansion, preserves existing records and byte-identical Layout 5, and creates the new partition only on the next record add.",
 }
 
 
@@ -440,9 +441,11 @@ def test_runtime_sc014_python312_fails_before_mutation_when_available(tmp_path: 
     assert not workspace.exists()
 
 
-def _configure_bundle_for_runtime(tmp_path: Path) -> Path:
+def _configure_bundle_for_runtime(tmp_path: Path, *, env: dict[str, str] | None = None) -> Path:
     bundle = tmp_path / "bundle"
-    assert _runner(_skill("cortex-kb-build"), "--json", "--workspace", str(bundle), "manage", "init").returncode == 0
+    assert _runner(
+        _skill("cortex-kb-build"), "--json", "--workspace", str(bundle), "manage", "init", env=env,
+    ).returncode == 0
     values = {
         "tags": {"version": 2, "groups": [
             {"name": "project", "tags": [{"tag": "project-alpha", "description": "Alpha"}]},
@@ -457,7 +460,7 @@ def _configure_bundle_for_runtime(tmp_path: Path) -> Path:
         operand.write_text(json.dumps(value), encoding="utf-8")
         result = _runner(
             _skill("cortex-kb-build"), "--json", "--workspace", str(bundle), "manage", "config", "set",
-            "--profile", name, "--file", str(operand),
+            "--profile", name, "--file", str(operand), env=env,
         )
         assert result.returncode == 0, result.stdout
     return bundle
@@ -631,3 +634,55 @@ def test_runtime_sc018_invalid_job_rejects_before_runner_or_mutation(
     result = _batch(_skill(skill_name), "--workspace", str(workspace), "--job", "-", stdin=raw)
     assert result.returncode == 2 and result.stdout == b"" and b"cortex record batch error:" in result.stderr
     assert not workspace.exists()
+
+
+def test_runtime_sc019_populated_tag_expansion_preserves_layout_and_defers_partition(tmp_path: Path) -> None:
+    env = dict(os.environ)
+    env["ANTI_ENTROPY_CORE_RUNNER"] = str(
+        (ROOT.parent / "anti-entropy-core" / "scripts" / "knowledge_unit_runner.py").resolve()
+    )
+    bundle = _configure_bundle_for_runtime(tmp_path, env=env)
+    first_source = tmp_path / "first.md"
+    first_source.write_bytes(b"# first\n")
+    first_metadata = tmp_path / "first.json"
+    first_metadata.write_text(json.dumps(_metadata("First")), encoding="utf-8")
+    first = _runner(
+        _skill("cortex-kb-ingest"), "--json", "--workspace", str(bundle), "record", "add",
+        "--source", str(first_source), "--metadata", str(first_metadata), env=env,
+    )
+    assert first.returncode == 0, first.stdout
+
+    layout_before = (bundle / "profiles" / "layout.json").read_bytes()
+    tags = json.loads((bundle / "profiles" / "tags.json").read_text("utf-8"))
+    tags["groups"][0]["tags"].append({"tag": "project-lighthouse", "description": "Lighthouse"})
+    candidate = tmp_path / "expanded-tags.json"
+    candidate.write_text(json.dumps(tags), encoding="utf-8")
+    expanded = _runner(
+        _skill("cortex-kb-build"), "--json", "--workspace", str(bundle), "manage", "config", "set",
+        "--profile", "tags", "--file", str(candidate), env=env,
+    )
+    assert expanded.returncode == 0, expanded.stdout
+    assert (bundle / "profiles" / "layout.json").read_bytes() == layout_before
+    assert not (bundle / "project-lighthouse").exists()
+    one = _runner(
+        _skill("cortex-kb-manage"), "--json", "--workspace", str(bundle), "manage", "validate", env=env,
+    )
+    assert json.loads(one.stdout)["data"] == {"version": "8.0.0", "valid": True, "count": 1}
+
+    second_source = tmp_path / "second.md"
+    second_source.write_bytes(b"# second\n")
+    second_metadata = tmp_path / "second.json"
+    second_metadata.write_text(json.dumps({
+        "title": "Lighthouse", "timestamp": "2026-08-23T00:00:00Z",
+        "tags": ["project-lighthouse", "research"],
+    }), encoding="utf-8")
+    second = _runner(
+        _skill("cortex-kb-ingest"), "--json", "--workspace", str(bundle), "record", "add",
+        "--source", str(second_source), "--metadata", str(second_metadata), env=env,
+    )
+    assert second.returncode == 0, second.stdout
+    assert json.loads(second.stdout)["data"]["partition"] == "project-lighthouse"
+    two = _runner(
+        _skill("cortex-kb-manage"), "--json", "--workspace", str(bundle), "manage", "validate", env=env,
+    )
+    assert json.loads(two.stdout)["data"] == {"version": "8.0.0", "valid": True, "count": 2}

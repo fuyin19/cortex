@@ -61,6 +61,7 @@ Repository boundary vocabulary: candidate under KB root; candidate under source 
 | runtime-sc016 | The ingest skill helper accepts full and Markdown-only items and returns one ordered wrapper summary; manage and build have none. |
 | runtime-sc017 | The ingest helper collects a valid middle Cortex failure and continues later batch items sequentially. |
 | runtime-sc018 | The ingest helper rejects malformed jobs, duplicate ids, and relative item paths before any runner call or Bundle mutation. |
+| runtime-sc019 | A populated Bundle accepts a complete keyed-monotonic Tag 2 expansion, preserves existing records and byte-identical Layout 5, and creates the new partition only on the next record add. |
 
 | Taxonomy scenario | Frozen semantic |
 |---|---|
@@ -68,7 +69,7 @@ Repository boundary vocabulary: candidate under KB root; candidate under source 
 | taxonomy-sc002 | Both legacy aliases are removed; repository taxonomy keeps exactly six canonical KB/Notes roles plus one isolated Collaborative Workspace domain skill. |
 | taxonomy-sc003 | Build requires one explicit active session and full operands for new or resumed targets. |
 | taxonomy-sc004 | Build candidates retain keyed Tags/membership and Registry id-to-path mappings and reject contraction prewrite. |
-| taxonomy-sc005 | Populated bytes freeze; configured maximum expansion is Layout-before-Tags; null sentinel is Tags-before-Layout. |
+| taxonomy-sc005 | Populated Tag 2 grows by keyed append while Layout 5 freezes; configured maximum expansion is Layout-before-Tags; null sentinel is Tags-before-Layout. |
 | taxonomy-sc006 | First failure stops later mutation and reports completed_steps, failed_step, residual_path, orphan, and the core Result. |
 | taxonomy-sc007 | KB core routes, profiles, version, source tree, package metadata, migration utility, and three KB wheels remain unchanged; repository taxonomy is one router, six KB/Notes roles, and one isolated Workspace domain skill. |
 | taxonomy-sc008 | `cortex` is an instruction-only explicit router that selects exactly one KB/Notes × build/ingest/manage role or the one Collaborative Workspace skill, and packages no runtime. |

@@ -83,24 +83,34 @@ def test_taxonomy_sc003_build_has_one_explicit_new_or_resumed_session() -> None:
 def test_taxonomy_sc004_keyed_monotonic_and_prewrite_contraction_rejection() -> None:
     build = _skill("cortex-kb-build")
     for retained in (
-        "Retain every existing group", "every existing tag's group membership",
+        "Retain every existing group and tag in exact relative order", "every existing tag's group membership",
+        "Append new groups", "new tags to the end of their group's `tags` array",
         "Retain every existing `id` to exact `path` mapping", "may edit descriptions only",
         "Reject every contraction or reassignment before the first write",
     ):
         assert retained in build
-    assert "must not remove, rename, move" in build
+    assert "must not remove, rename, move, reorder" in build
     assert "must not remove an id or reassign its path" in build
 
 
 def test_taxonomy_sc005_profile_modes_and_conditional_order_are_exact() -> None:
     build = _skill("cortex-kb-build")
-    assert "For a **populated** Bundle, Tag 2 and Layout 5 must remain byte-identical" in build
+    fixture = json.loads((ROOT / "fixtures" / "capabilities" / "cortex7-surface.json").read_text("utf-8"))
+    assert fixture["build_profile_policy"] == {
+        "tag_transition": "keyed-monotonic-append",
+        "description_edits": True,
+        "populated_layout": "byte-identical",
+    }
+    assert "For a **populated** Bundle, Tag 2 may change only under the keyed-monotonic rule" in build
+    assert "Layout 5 must remain byte-identical" in build
+    populated = build.index("For a **populated** Bundle, set the complete Tag 2 candidate")
     assert "keep `max_component_length` the same or increase it" in build
-    configured = build.index("For **empty configured** with a `max_component_length` increase")
+    configured = build.index("For **empty configured** with a `max_component_length` increase", populated)
     layout_before_tags = build.index("set the complete Layout 5 candidate before the complete Tag 2 candidate", configured)
     sentinel = build.index("For **empty null sentinel**", layout_before_tags)
     tags_before_layout = build.index("set the complete Tag 2 candidate first, then set Layout 5", sentinel)
-    assert configured < layout_before_tags < sentinel < tags_before_layout
+    registry_last = build.index("Invoke `registry.set` only after all requested Bundle profile steps succeed", tags_before_layout)
+    assert populated < configured < layout_before_tags < sentinel < tags_before_layout < registry_last
     assert "this tags-before-layout order applies even when the maximum increases" in build
     assert "existing candidate Tag 2 group that contains at least one tag" in build
 
