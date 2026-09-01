@@ -27,7 +27,7 @@ Every canonical KB skill embeds the same Cortex 8 wheel and requires the same
 explicit external Core runner for non-init work; ownership is enforced by the
 skill contract, not by removing CLI routes.
 
-### Collaborative Workspace 1.0
+### Collaborative Workspace 1.1
 
 `cortex-collaborative-workspace` is one independent explicit-only skill with its own deterministic offline wheel. It prepares the fixed outer Collaborative Workspace and nested Agent Workbench contracts without importing Record KB or Notes:
 
@@ -37,17 +37,20 @@ skill contract, not by removing CLI routes.
 ├── CLAUDE.md
 ├── collaborative-workspace.json
 ├── ref/
+│   └── _outdated/
 └── agent-workbench/
     ├── AGENTS.md
     ├── CLAUDE.md
-    ├── ref/.agent-workbench.json
+    ├── ref/
+    │   ├── .agent-workbench.json
+    │   └── _outdated/
     ├── temp/
     └── output/
 ```
 
-Invoke `scripts/run_collaborative_workspace.py --json prepare|status|validate --root <absolute-root>` through the exact `CORTEX_PYTHON` binding. `ANTI_ENTROPY_CORE_RUNNER` is mandatory. Prepare additionally requires explicit absolute `FILE_CONVERSION_RUNNER`/`FILE_CONVERSION_CONFIG` and/or `MARKDOWN_CONVERSION_RUNNER`/`MARKDOWN_CONVERSION_CONFIG` when those source routes are present. There is no provider lookup or fallback.
+Invoke `scripts/run_collaborative_workspace.py --json prepare|status|validate --root <absolute-root>` through the exact `CORTEX_PYTHON` binding. Prepare alone also accepts repeatable `--outdate <relative-source-path>`. `ANTI_ENTROPY_CORE_RUNNER` is mandatory. Prepare additionally requires explicit absolute `FILE_CONVERSION_RUNNER`/`FILE_CONVERSION_CONFIG` and/or `MARKDOWN_CONVERSION_RUNNER`/`MARKDOWN_CONVERSION_CONFIG` when those source routes are present. There is no provider lookup or fallback.
 
-Outer `ref/` is human-owned and never mutated. Prepare creates, safely adopts, returns an exact no-op, or replaces only stale `agent-workbench/ref/`; nonempty `temp/` returns busy, while `output/` and safe extras are preserved. The runtime does not expose delete, clean, rebuild, watch, queue, recovery, automatic KB/Notes ingest, or output promotion. See `docs/collaborative-workspace-architecture.md`.
+Outer `ref/` is human-owned; its required `_outdated/` subtree is excluded from active projection. Prepare otherwise changes outer reference data only for an explicit `--outdate`. Missing or changed sources automatically archive their former prepared KUs in the inner generation history. Nonempty `temp/` returns busy, while `output/` and safe extras are preserved. The runtime does not expose sync, duplicate inference, delete, clean, rebuild, watch, queue, recovery, automatic KB/Notes ingest, or output promotion. See `docs/collaborative-workspace-architecture.md`.
 
 Only `cortex-kb-ingest` carries `scripts/batch_record_add.py`. The helper is a sequential wrapper around the same verified `record add` route. It preserves exact v1 syntax and adds exact v2 source-only, conversion-only, and both forms through `--job <path|->` (stdin is preferred). It validates every item's syntax before the first runner call, continues after valid non-ok Results, creates no persistent job state, and is not a core/public route.
 

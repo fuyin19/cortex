@@ -13,13 +13,13 @@ import zipfile
 ROOT = Path(__file__).parents[1]
 SKILL = ROOT / "skills" / "cortex-collaborative-workspace"
 RUNNER = SKILL / "scripts" / "run_collaborative_workspace.py"
-WHEEL = SKILL / "scripts" / "vendor" / "cortex_collaborative_workspace-1.0.0-py3-none-any.whl"
+WHEEL = SKILL / "scripts" / "vendor" / "cortex_collaborative_workspace-1.1.0-py3-none-any.whl"
 CORE_RUNNER = ROOT.parent / "anti-entropy-core" / "scripts" / "knowledge_unit_runner.py"
 PAYLOADS = (
     "scripts/run_collaborative_workspace.py",
     "scripts/run_collaborative_workspace.cmd",
     "scripts/runtime-manifest.json",
-    "scripts/vendor/cortex_collaborative_workspace-1.0.0-py3-none-any.whl",
+    "scripts/vendor/cortex_collaborative_workspace-1.1.0-py3-none-any.whl",
 )
 
 
@@ -54,13 +54,13 @@ def test_workspace_runtime_is_deterministic_closed_and_dependency_free() -> None
         "isolation": "-I",
         "python": "3.11",
         "schema_version": 1,
-        "version": "1.0.0",
+        "version": "1.1.0",
         "wheel": WHEEL.name,
         "wheel_sha256": hashlib.sha256(WHEEL.read_bytes()).hexdigest(),
     }
     with zipfile.ZipFile(WHEEL) as archive:
         names = archive.namelist()
-        metadata = archive.read("cortex_collaborative_workspace-1.0.0.dist-info/METADATA").decode("utf-8")
+        metadata = archive.read("cortex_collaborative_workspace-1.1.0.dist-info/METADATA").decode("utf-8")
     assert "Requires-Dist:" not in metadata and not any(name.endswith("entry_points.txt") for name in names)
     assert "cortex_collaborative_workspace/workspace.py" in names
     assert not (ROOT / "skills" / "cortex" / "scripts").exists()
@@ -68,7 +68,7 @@ def test_workspace_runtime_is_deterministic_closed_and_dependency_free() -> None
 
 def test_workspace_runtime_version_tamper_and_binding_fail_closed(tmp_path: Path) -> None:
     version = _run("--version")
-    assert version.returncode == 0 and version.stdout == "cortex-collaborative-workspace 1.0.0\n"
+    assert version.returncode == 0 and version.stdout == "cortex-collaborative-workspace 1.1.0\n"
     copied = tmp_path / "skill"
     shutil.copytree(SKILL, copied)
     wheel = copied / "scripts" / "vendor" / WHEEL.name

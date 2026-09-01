@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import stat
 
@@ -68,9 +69,13 @@ def test_workspace_create_is_complete_and_read_only_status_validate(tmp_path: Pa
     assert set(path.name for path in root.iterdir()) == {
         "AGENTS.md", "CLAUDE.md", "collaborative-workspace.json", "ref", "agent-workbench",
     }
+    assert set(path.name for path in (root / "ref").iterdir()) == {"_outdated"}
     assert (root / "CLAUDE.md").read_bytes() == b"@AGENTS.md\n"
     assert set(path.name for path in (root / "agent-workbench").iterdir()) == {
         "AGENTS.md", "CLAUDE.md", "ref", "temp", "output",
+    }
+    assert set(path.name for path in (root / "agent-workbench" / "ref").iterdir()) == {
+        ".agent-workbench.json", "_outdated",
     }
     before = _tree(root)
     assert workspace.status(root)["data"]["state"] == "ready"
@@ -91,7 +96,8 @@ def test_workspace_adopts_ref_projects_full_basename_and_preserves_extras(
     snapshots = _fake_providers(monkeypatch)
     adopted = workspace.prepare(root)
     assert adopted["data"]["action"] == "adopted"
-    assert _tree(root / "ref") == before_ref and extra.read_bytes() == b"keep"
+    after_ref = _tree(root / "ref")
+    assert after_ref == {"_outdated": None, **before_ref} and extra.read_bytes() == b"keep"
     unit = root / "agent-workbench" / "ref" / "nested" / "report.txt"
     assert (unit / "report.txt.md").is_file()
     assert (unit / "report.txt.json").is_file()
@@ -102,6 +108,23 @@ def test_workspace_adopts_ref_projects_full_basename_and_preserves_extras(
         "path": "nested/report.txt", "kind": "file", "digest": hashlib.sha256(b"source").hexdigest(),
     }]
     assert manifest["items"][0]["provider_route"] == "markdown-conversion"
+
+
+def test_workspace_adopts_existing_outer_archive_without_projecting_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    archive = root / "ref" / "_outdated" / "human-layout"
+    archive.mkdir(parents=True)
+    (archive / "retired.txt").write_bytes(b"retired")
+    (root / "ref" / "active.txt").write_bytes(b"active")
+    before_archive = _tree(root / "ref" / "_outdated")
+    _fake_providers(monkeypatch)
+    workspace.prepare(root)
+    assert _tree(root / "ref" / "_outdated") == before_archive
+    manifest = _json(root / "agent-workbench" / "ref" / ".agent-workbench.json")
+    assert [record["path"] for record in manifest["source_records"]] == ["active.txt"]
+    assert list((root / "agent-workbench" / "ref" / "_outdated").iterdir()) == []
 
 
 def test_workspace_exact_noop_then_refresh_preserves_output_and_only_replaces_prepared_ref(
@@ -125,6 +148,160 @@ def test_workspace_exact_noop_then_refresh_preserves_output_and_only_replaces_pr
     assert deliverable.read_bytes() == b"answer"
     unit = root / "agent-workbench" / "ref" / "memo.txt"
     assert (unit / "src" / "memo.txt").read_bytes() == b"two"
+
+
+def test_workspace_add_only_refreshes_without_archive_batch_or_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    workspace.prepare(root)
+    (root / "ref" / "new.txt").write_bytes(b"new")
+    _fake_providers(monkeypatch)
+    monkeypatch.setattr(
+        workspace,
+        "_utc_now",
+        lambda: (_ for _ in ()).throw(AssertionError("add-only refresh must not create a retirement batch")),
+    )
+    refreshed = workspace.prepare(root)
+    assert refreshed["data"] == {
+        "action": "refreshed",
+        "state": "ready",
+        "workspace_id": refreshed["data"]["workspace_id"],
+        "generation": 2,
+        "source_items": 1,
+        "warnings": [],
+    }
+    prepared = root / "agent-workbench" / "ref"
+    assert (prepared / "new.txt" / "src" / "new.txt").read_bytes() == b"new"
+    assert list((prepared / "_outdated").iterdir()) == []
+    assert workspace.status(root)["data"]["state"] == "ready"
+
+
+def test_workspace_changed_source_archives_old_ku_and_keeps_outer_archive_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    source = root / "ref" / "memo.txt"
+    source.write_bytes(b"one")
+    _fake_providers(monkeypatch)
+    workspace.prepare(root)
+    monkeypatch.setattr(
+        workspace, "_utc_now", lambda: datetime(2026, 9, 1, 3, 4, tzinfo=timezone.utc),
+    )
+    source.write_bytes(b"two")
+    refreshed = workspace.prepare(root)
+    assert refreshed["data"]["archive_batch"] == "_outdated/generation-1-20260901T0304Z"
+    assert refreshed["data"]["archived_sources"] == ["memo.txt"]
+    assert list((root / "ref" / "_outdated").iterdir()) == []
+    inner = root / "agent-workbench" / "ref"
+    archived = inner / "_outdated" / "generation-1-20260901T0304Z" / "memo.txt"
+    assert (archived / "src" / "memo.txt").read_bytes() == b"one"
+    assert (inner / "memo.txt" / "src" / "memo.txt").read_bytes() == b"two"
+    assert workspace.validate(root)["data"]["valid"] is True
+
+
+def test_workspace_explicit_outdate_moves_outer_source_and_archives_same_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref" / "nested").mkdir(parents=True)
+    (root / "ref" / "one.txt").write_bytes(b"one")
+    (root / "ref" / "nested" / "two.txt").write_bytes(b"two")
+    (root / "ref" / "keep.txt").write_bytes(b"keep")
+    _fake_providers(monkeypatch)
+    workspace.prepare(root)
+    monkeypatch.setattr(
+        workspace, "_utc_now", lambda: datetime(2026, 9, 1, 5, 6, tzinfo=timezone.utc),
+    )
+    result_value = workspace.prepare(root, ("nested/two.txt", "one.txt"))
+    assert result_value["data"]["generation"] == 2
+    assert result_value["data"]["source_items"] == 1
+    assert result_value["data"]["archived_sources"] == ["nested/two.txt", "one.txt"]
+    batch = "generation-1-20260901T0506Z"
+    outer = root / "ref" / "_outdated" / batch
+    inner = root / "agent-workbench" / "ref" / "_outdated" / batch
+    assert (outer / "one.txt").read_bytes() == b"one"
+    assert (outer / "nested" / "two.txt").read_bytes() == b"two"
+    assert (inner / "one.txt" / "src" / "one.txt").read_bytes() == b"one"
+    assert (inner / "nested" / "two.txt" / "src" / "two.txt").read_bytes() == b"two"
+    assert not (root / "ref" / "one.txt").exists()
+    assert not (root / "ref" / "nested" / "two.txt").exists()
+    manifest = _json(root / "agent-workbench" / "ref" / ".agent-workbench.json")
+    assert [record["path"] for record in manifest["source_records"]] == ["keep.txt"]
+
+
+def test_workspace_removed_source_is_archived_and_multiple_generations_are_retained(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    source = root / "ref" / "memo.txt"
+    source.write_bytes(b"one")
+    _fake_providers(monkeypatch)
+    workspace.prepare(root)
+    moments = iter([
+        datetime(2026, 9, 1, 6, 0, tzinfo=timezone.utc),
+        datetime(2026, 9, 1, 6, 1, tzinfo=timezone.utc),
+    ])
+    monkeypatch.setattr(workspace, "_utc_now", lambda: next(moments))
+    source.write_bytes(b"two")
+    workspace.prepare(root)
+    source.unlink()
+    workspace.prepare(root)
+    archive = root / "agent-workbench" / "ref" / "_outdated"
+    assert {path.name for path in archive.iterdir()} == {
+        "generation-1-20260901T0600Z", "generation-2-20260901T0601Z",
+    }
+    assert (archive / "generation-1-20260901T0600Z" / "memo.txt" / "src" / "memo.txt").read_bytes() == b"one"
+    assert (archive / "generation-2-20260901T0601Z" / "memo.txt" / "src" / "memo.txt").read_bytes() == b"two"
+    assert _json(root / "agent-workbench" / "ref" / ".agent-workbench.json")["generation"] == 3
+
+
+def test_workspace_explicit_outdate_requires_exact_active_source_and_is_zero_write_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    source = root / "ref" / "memo.txt"
+    source.write_bytes(b"one")
+    _fake_providers(monkeypatch)
+    workspace.prepare(root)
+    source.write_bytes(b"changed")
+    before = _tree(root)
+    with pytest.raises(workspace.WorkspaceError, match="outdate_blocked") as captured:
+        workspace.prepare(root, ("memo.txt", "missing.txt"))
+    assert {item["code"] for item in captured.value.issues} == {
+        "outdate_source_changed", "outdate_source_not_active",
+    }
+    assert _tree(root) == before
+
+
+def test_workspace_explicit_outdate_rejects_missing_or_unrecognized_workspace_without_write(
+    tmp_path: Path,
+) -> None:
+    missing = tmp_path / "missing"
+    with pytest.raises(workspace.WorkspaceError, match="outdate_requires_recognized_workspace"):
+        workspace.prepare(missing, ("memo.txt",))
+    assert not missing.exists()
+    ordinary = tmp_path / "ordinary"
+    (ordinary / "ref").mkdir(parents=True)
+    (ordinary / "ref" / "memo.txt").write_bytes(b"user")
+    before = _tree(ordinary)
+    with pytest.raises(workspace.WorkspaceError, match="outdate_requires_recognized_workspace"):
+        workspace.prepare(ordinary, ("memo.txt",))
+    assert _tree(ordinary) == before
+
+
+def test_workspace_noop_does_not_read_archive_clock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "workspace"
+    workspace.prepare(root)
+    monkeypatch.setattr(
+        workspace,
+        "_utc_now",
+        lambda: (_ for _ in ()).throw(AssertionError("no-op must not read the clock")),
+    )
+    assert workspace.prepare(root)["data"]["action"] == "no_op"
 
 
 def test_workspace_nonempty_temp_is_busy_and_zero_write(
@@ -190,8 +367,8 @@ def test_workspace_final_temp_check_blocks_refresh_publication(
     original_build = workspace._build_candidate
 
     def build_with_temp_race(candidate_root: Path, workspace_id: str, generation: int,
-                             items: list[workspace.SourceItem], core: CoreRunner):
-        built = original_build(candidate_root, workspace_id, generation, items, core)
+                             items: list[workspace.SourceItem], core: CoreRunner, **kwargs: object):
+        built = original_build(candidate_root, workspace_id, generation, items, core, **kwargs)
         (root / "agent-workbench" / "temp" / "raced.tmp").write_bytes(b"work")
         return built
 
@@ -322,6 +499,9 @@ def test_workspace_cli_surface_is_closed_and_requires_absolute_root(capsys: pyte
     assert main(["--json", "delete", "--root", "C:\\workspace"]) == 2
     value = json.loads(capsys.readouterr().out)
     assert value["issues"] == [{"code": "invalid_arguments"}]
+    assert main(["--json", "prepare", "--root", str(Path.cwd()), "--outdate", "../memo.txt"]) == 2
+    value = json.loads(capsys.readouterr().out)
+    assert value["issues"] == [{"code": "invalid_outdate_path"}]
 
 
 def test_workspace_provider_binding_uses_exact_snapshot_cli_and_candidate_target(
@@ -555,6 +735,35 @@ def test_workspace_refresh_rename_failure_restores_old_prepared_ref(
     assert captured.value.data == {"published": False}
     assert _tree(prepared) == old_tree
     assert not any(path.name.startswith(".ref-old-") for path in prepared.parent.iterdir())
+
+
+def test_workspace_explicit_outdate_rename_failure_restores_outer_and_inner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    source = root / "ref" / "memo.txt"
+    source.write_bytes(b"one")
+    _fake_providers(monkeypatch)
+    workspace.prepare(root)
+    monkeypatch.setattr(
+        workspace, "_utc_now", lambda: datetime(2026, 9, 1, 7, 0, tzinfo=timezone.utc),
+    )
+    before = _tree(root)
+    prepared = root / "agent-workbench" / "ref"
+    original = workspace.os.rename
+
+    def fail_candidate(source_path: str | os.PathLike[str], destination_path: str | os.PathLike[str]) -> None:
+        source_value, destination_value = Path(source_path), Path(destination_path)
+        if source_value.name == "ref" and "candidate" in source_value.parts and destination_value == prepared:
+            raise OSError("injected")
+        original(source_path, destination_path)
+
+    monkeypatch.setattr(workspace.os, "rename", fail_candidate)
+    with pytest.raises(workspace.WorkspaceError, match="refresh_publish_failed") as captured:
+        workspace.prepare(root, ("memo.txt",))
+    assert captured.value.data == {"published": False}
+    assert _tree(root) == before
 
 
 def test_workspace_refresh_preserves_backup_when_cleanup_identity_changes(

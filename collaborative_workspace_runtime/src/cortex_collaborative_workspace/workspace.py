@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 import ctypes
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -21,10 +22,11 @@ from typing import Any, Iterator
 from .core_runner import CoreFailure, CoreRunner, INNER_CONTRACT, OUTER_CONTRACT
 
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 RESULT_CODES = {"ok": 0, "usage_error": 2, "validation_error": 3, "busy": 5, "io_error": 6}
 OUTER_MANIFEST = "collaborative-workspace.json"
 INNER_MANIFEST = ".agent-workbench.json"
+OUTDATED = "_outdated"
 OUTER_GUIDES = ("AGENTS.md", "CLAUDE.md")
 OUTER_ROLES = ("ref", "agent-workbench")
 INNER_ROLES = ("ref", "temp", "output")
@@ -205,6 +207,29 @@ def _safe_component(value: str) -> None:
         raise WorkspaceError("validation_error", "reserved_component")
 
 
+def _canonical_outdate_paths(values: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+    canonical: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        if not isinstance(raw, str) or not raw or "\\" in raw or raw.startswith("/"):
+            raise WorkspaceError("usage_error", "invalid_outdate_path")
+        parts = raw.split("/")
+        try:
+            for part in parts:
+                _safe_component(part)
+        except WorkspaceError as exc:
+            raise WorkspaceError("usage_error", "invalid_outdate_path") from exc
+        normalized = "/".join(parts)
+        key = _path_key(normalized)
+        if _path_key(parts[0]) == _path_key(OUTDATED):
+            raise WorkspaceError("usage_error", "invalid_outdate_path")
+        if key in seen:
+            raise WorkspaceError("usage_error", "duplicate_outdate_path")
+        seen.add(key)
+        canonical.append(normalized)
+    return tuple(sorted(canonical, key=lambda value: value.encode("utf-8")))
+
+
 def _path_key(value: str) -> str:
     return unicodedata.normalize("NFC", value).casefold()
 
@@ -334,6 +359,19 @@ def _copy_tree(source: Path, destination: Path, expected_digest: str) -> None:
         raise WorkspaceError("validation_error", "source_changed_during_snapshot", data={"path": str(source)})
 
 
+def _copy_tree_contents(source: Path, destination: Path, expected_digest: str) -> None:
+    for entry in _entries(source):
+        target = destination / entry.name
+        info = _identity(entry)
+        assert info is not None
+        if stat.S_ISDIR(info.mode):
+            _copy_tree(entry, target, _tree_digest(entry))
+        else:
+            _copy_file(entry, target, _file_digest(entry))
+    if _tree_digest(destination) != expected_digest or _tree_digest(source) != expected_digest:
+        raise WorkspaceError("validation_error", "source_changed_during_snapshot", data={"path": str(source)})
+
+
 def _source_tree_digest(items: list[SourceItem]) -> str:
     return _sha256(_canonical_json([item.record() for item in items]))
 
@@ -387,6 +425,8 @@ def _scan_source(reference: Path | None, core: CoreRunner) -> tuple[list[SourceI
             info = _identity(entry)
             assert info is not None
             if stat.S_ISDIR(info.mode):
+                if not relative.parts and entry.name == OUTDATED:
+                    continue
                 if folded in DENY_DIRECTORIES:
                     issues.append(_issue("instruction_control_source", canonical))
                 else:
@@ -612,14 +652,53 @@ def _inner_manifest(
     }
 
 
-def _populate_candidate(stage: Stage, workspace_id: str, generation: int,
-                        items: list[SourceItem], core: CoreRunner) -> dict[str, Any]:
+def _populate_candidate(
+    stage: Stage,
+    workspace_id: str,
+    generation: int,
+    items: list[SourceItem],
+    core: CoreRunner,
+    *,
+    previous_ref: Path | None = None,
+    retired_paths: tuple[str, ...] = (),
+    batch_name: str | None = None,
+    outer_archive: Path | None = None,
+) -> dict[str, Any]:
     candidate = stage.candidate
     _write_json_exclusive(candidate / OUTER_MANIFEST, _outer_manifest(workspace_id))
     core.workspace_stage_complete(candidate, OUTER_CONTRACT)
+    candidate_outer_archive = candidate / "ref" / OUTDATED
+    if outer_archive is not None:
+        _copy_tree_contents(outer_archive, candidate_outer_archive, _tree_digest(outer_archive))
     workbench = candidate / "agent-workbench"
     reference = workbench / "ref"
     reference.mkdir()
+    archive = reference / OUTDATED
+    archive.mkdir()
+    if previous_ref is not None:
+        previous_archive = previous_ref / OUTDATED
+        _copy_tree_contents(previous_archive, archive, _tree_digest(previous_archive))
+    if retired_paths:
+        if previous_ref is None or batch_name is None:
+            raise WorkspaceError("io_error", "archive_candidate_invalid")
+        previous_manifest = _read_json(previous_ref / INNER_MANIFEST)
+        raw_items = previous_manifest.get("items")
+        by_path = {
+            item.get("source_path"): item
+            for item in raw_items
+            if isinstance(item, dict)
+        } if isinstance(raw_items, list) else {}
+        batch = archive / batch_name
+        batch.mkdir()
+        for relative in retired_paths:
+            old_item = by_path.get(relative)
+            prepared_digest = old_item.get("prepared_digest") if isinstance(old_item, dict) else None
+            if not isinstance(prepared_digest, str):
+                raise WorkspaceError("validation_error", "archive_source_manifest_invalid", data={"path": relative})
+            source_unit = previous_ref.joinpath(*relative.split("/"))
+            destination = batch.joinpath(*relative.split("/"))
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            _copy_tree(source_unit, destination, prepared_digest)
     projected: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     for item in items:
@@ -658,11 +737,31 @@ def _populate_candidate(stage: Stage, workspace_id: str, generation: int,
     return manifest
 
 
-def _build_candidate(root: Path, workspace_id: str, generation: int,
-                     items: list[SourceItem], core: CoreRunner) -> tuple[Stage, dict[str, Any]]:
+def _build_candidate(
+    root: Path,
+    workspace_id: str,
+    generation: int,
+    items: list[SourceItem],
+    core: CoreRunner,
+    *,
+    previous_ref: Path | None = None,
+    retired_paths: tuple[str, ...] = (),
+    batch_name: str | None = None,
+    outer_archive: Path | None = None,
+) -> tuple[Stage, dict[str, Any]]:
     stage = _new_stage(root)
     try:
-        return stage, _populate_candidate(stage, workspace_id, generation, items, core)
+        return stage, _populate_candidate(
+            stage,
+            workspace_id,
+            generation,
+            items,
+            core,
+            previous_ref=previous_ref,
+            retired_paths=retired_paths,
+            batch_name=batch_name,
+            outer_archive=outer_archive,
+        )
     except Exception:
         _cleanup_stage(stage)
         raise
@@ -980,6 +1079,9 @@ def _adopt(root: Path, core: CoreRunner) -> dict[str, Any]:
     blockers = _reserved_adoption_issues(root)
     reference = root / "ref" if (root / "ref").exists() else None
     reference_identity = _identity(reference, directory=True) if reference is not None else None
+    outer_archive = reference / OUTDATED if reference is not None and (reference / OUTDATED).exists() else None
+    outer_archive_identity = _identity(outer_archive, directory=True) if outer_archive is not None else None
+    outer_archive_digest = _tree_digest(outer_archive) if outer_archive is not None else None
     items, scan_issues = _scan_source(reference, core)
     blockers.extend(scan_issues)
     blockers.extend(_issue("unsupported_source_type", item.relative) for item in items if _route(item) is None)
@@ -987,7 +1089,9 @@ def _adopt(root: Path, core: CoreRunner) -> dict[str, Any]:
         raise WorkspaceError("validation_error", "adoption_blocked", issues=blockers,
                              data={"state": "invalid"})
     workspace_id = str(uuid.uuid4())
-    stage, manifest = _build_candidate(root, workspace_id, 1, items, core)
+    stage, manifest = _build_candidate(
+        root, workspace_id, 1, items, core, outer_archive=outer_archive,
+    )
     installed: list[Installed] = []
     recognized = False
     cleanup_attempted = False
@@ -1000,7 +1104,22 @@ def _adopt(root: Path, core: CoreRunner) -> dict[str, Any]:
             (reference_identity is None and current_reference.exists())
             or (reference_identity is not None and not _same_identity(current_reference, reference_identity))
         )
-        if not _same_identity(root, root_identity) or reference_changed or _reserved_adoption_issues(root):
+        archive_changed = (
+            (outer_archive_identity is None and reference is not None and (reference / OUTDATED).exists())
+            or (
+                outer_archive_identity is not None
+                and (
+                    not _same_identity(outer_archive, outer_archive_identity)
+                    or _tree_digest(outer_archive) != outer_archive_digest
+                )
+            )
+        )
+        if (
+            not _same_identity(root, root_identity)
+            or reference_changed
+            or archive_changed
+            or _reserved_adoption_issues(root)
+        ):
             raise WorkspaceError("validation_error", "workspace_changed_during_prepare")
         for name in OUTER_GUIDES:
             target = root / name
@@ -1008,9 +1127,20 @@ def _adopt(root: Path, core: CoreRunner) -> dict[str, Any]:
         if reference is None:
             staged_ref = stage.candidate / "ref"
             target_ref = root / "ref"
-            ref_identity = _literal_empty(staged_ref)
+            staged_ref_install = _installed_tree(staged_ref)
             os.rename(staged_ref, target_ref)
-            installed.append(Installed(target_ref, ref_identity, "empty"))
+            installed.append(Installed(
+                target_ref,
+                staged_ref_install.identity,
+                staged_ref_install.kind,
+                staged_ref_install.digest,
+            ))
+        elif outer_archive is None:
+            target_archive = reference / OUTDATED
+            target_archive.mkdir()
+            archive_identity = _identity(target_archive, directory=True)
+            assert archive_identity is not None
+            installed.append(Installed(target_archive, archive_identity, "empty"))
         staged_workbench = _installed_tree(stage.candidate / "agent-workbench")
         target_workbench = root / "agent-workbench"
         os.rename(stage.candidate / "agent-workbench", target_workbench)
@@ -1044,7 +1174,48 @@ def _adopt(root: Path, core: CoreRunner) -> dict[str, Any]:
             _cleanup_stage(stage)
 
 
-def _refresh_or_noop(root: Path, core: CoreRunner) -> dict[str, Any]:
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _archive_batch_name(generation: int) -> str:
+    observed = _utc_now().astimezone(timezone.utc)
+    return f"generation-{generation}-{observed.strftime('%Y%m%dT%H%MZ')}"
+
+
+def _restore_outer_moves(
+    moved: list[tuple[Path, Path, Identity]],
+    batch: Path | None,
+    batch_identity: Identity | None,
+) -> list[str]:
+    residues: list[str] = []
+    for source, destination, expected in reversed(moved):
+        if source.exists() or not _same_identity(destination, expected):
+            residues.append(str(destination))
+            continue
+        try:
+            os.rename(destination, source)
+        except OSError:
+            residues.append(str(destination))
+    if batch is not None and batch_identity is not None:
+        if not _same_identity(batch, batch_identity):
+            residues.append(str(batch))
+        else:
+            try:
+                if any(item["kind"] != "directory" for item in _tree_records_once(batch)):
+                    residues.append(str(batch))
+                else:
+                    _delete_no_follow(batch)
+            except (OSError, WorkspaceError):
+                residues.append(str(batch))
+    return sorted(set(residues))
+
+
+def _refresh_or_noop(
+    root: Path,
+    core: CoreRunner,
+    outdate_paths: tuple[str, ...] = (),
+) -> dict[str, Any]:
     try:
         outer, inner, items = _validate_recognized(root, core)
     except WorkspaceError as exc:
@@ -1057,10 +1228,53 @@ def _refresh_or_noop(root: Path, core: CoreRunner) -> dict[str, Any]:
     root_identity = _identity(root, directory=True)
     outer_ref = root / "ref"
     outer_ref_identity = _identity(outer_ref, directory=True)
+    outer_archive = outer_ref / OUTDATED
+    outer_archive_identity = _identity(outer_archive, directory=True)
+    outer_archive_digest = _tree_digest(outer_archive)
     prepared_ref = root / "agent-workbench" / "ref"
     prepared_ref_identity = _identity(prepared_ref, directory=True)
+    prepared_ref_digest = _tree_digest(prepared_ref)
     temp = root / "agent-workbench" / "temp"
-    if inner["source_records"] == _records(items):
+    old_records = {
+        record.get("path"): record
+        for record in inner.get("source_records", [])
+        if isinstance(record, dict) and isinstance(record.get("path"), str)
+    }
+    current_by_path = {item.relative: item for item in items}
+    explicit_issues: list[dict[str, Any]] = []
+    explicit_identities: dict[str, Identity] = {}
+    for relative in outdate_paths:
+        old_record = old_records.get(relative)
+        current = current_by_path.get(relative)
+        if old_record is None:
+            explicit_issues.append(_issue("outdate_source_not_active", relative))
+        elif current is None:
+            explicit_issues.append(_issue("outdate_source_missing", relative))
+        elif current.record() != old_record:
+            explicit_issues.append(_issue("outdate_source_changed", relative))
+        else:
+            identity = _identity(current.source)
+            assert identity is not None
+            explicit_identities[relative] = identity
+    if explicit_issues:
+        raise WorkspaceError(
+            "validation_error",
+            "outdate_blocked",
+            issues=explicit_issues,
+            data={"state": "invalid"},
+        )
+    explicit = set(outdate_paths)
+    active_items = [item for item in items if item.relative not in explicit]
+    active_records = {item.relative: item.record() for item in active_items}
+    retired_paths = tuple(sorted(
+        (
+            relative
+            for relative, old_record in old_records.items()
+            if active_records.get(relative) != old_record
+        ),
+        key=lambda value: value.encode("utf-8"),
+    ))
+    if inner["source_records"] == _records(active_items):
         second, issues = _scan_source(outer_ref, core)
         if issues or _records(second) != _records(items):
             raise WorkspaceError("validation_error", "source_changed_during_prepare", issues=issues or None)
@@ -1069,33 +1283,76 @@ def _refresh_or_noop(root: Path, core: CoreRunner) -> dict[str, Any]:
             "generation": inner["generation"], "source_items": len(items), "warnings": inner["warnings"],
         })
     temp_identity = _literal_empty(temp)
+    old_generation = int(inner["generation"])
+    batch_name = _archive_batch_name(old_generation) if retired_paths else None
     stage, candidate_manifest = _build_candidate(
-        root, str(outer["workspace_id"]), int(inner["generation"]) + 1, items, core,
+        root,
+        str(outer["workspace_id"]),
+        old_generation + 1,
+        active_items,
+        core,
+        previous_ref=prepared_ref,
+        retired_paths=retired_paths,
+        batch_name=batch_name,
     )
     candidate_ref = stage.candidate / "agent-workbench" / "ref"
     backup = prepared_ref.with_name(".ref-old-" + uuid.uuid4().hex)
     published = False
     cleanup_attempted = False
+    outer_batch: Path | None = None
+    outer_batch_identity: Identity | None = None
+    moved: list[tuple[Path, Path, Identity]] = []
     try:
         second, issues = _scan_source(outer_ref, core)
         if issues or _records(second) != _records(items):
             raise WorkspaceError("validation_error", "source_changed_during_prepare", issues=issues or None)
         if (
             not _same_identity(root, root_identity) or not _same_identity(outer_ref, outer_ref_identity)
+            or not _same_identity(outer_archive, outer_archive_identity)
+            or _tree_digest(outer_archive) != outer_archive_digest
             or not _same_identity(prepared_ref, prepared_ref_identity)
+            or _tree_digest(prepared_ref) != prepared_ref_digest
             or not _same_identity(temp, temp_identity)
         ):
             raise WorkspaceError("validation_error", "workspace_changed_during_prepare")
         _literal_empty(temp)
+        for relative, expected in explicit_identities.items():
+            source = outer_ref.joinpath(*relative.split("/"))
+            if not _same_identity(source, expected):
+                raise WorkspaceError("validation_error", "outdate_source_changed", data={"path": relative})
+        if outdate_paths:
+            assert batch_name is not None
+            outer_batch = outer_archive / batch_name
+            if outer_batch.exists():
+                raise WorkspaceError("validation_error", "archive_batch_collision")
+            outer_batch.mkdir()
+            outer_batch_identity = _identity(outer_batch, directory=True)
+            assert outer_batch_identity is not None
+            for relative in outdate_paths:
+                source = outer_ref.joinpath(*relative.split("/"))
+                destination = outer_batch.joinpath(*relative.split("/"))
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                expected = explicit_identities[relative]
+                os.rename(source, destination)
+                moved.append((source, destination, expected))
+                if not _same_identity(destination, expected):
+                    raise WorkspaceError("io_error", "outdate_move_identity_changed", data={"path": relative})
         if backup.exists():
             raise WorkspaceError("validation_error", "refresh_backup_collision")
         os.rename(prepared_ref, backup)
         try:
             os.rename(candidate_ref, prepared_ref)
             published = True
-        except OSError:
-            os.rename(backup, prepared_ref)
-            raise
+        except OSError as publish_error:
+            try:
+                os.rename(backup, prepared_ref)
+            except OSError as restore_error:
+                raise WorkspaceError(
+                    "io_error",
+                    "refresh_restore_failed",
+                    data={"published": False, "residue": [str(backup)]},
+                ) from restore_error
+            raise publish_error
         if not _same_identity(backup, prepared_ref_identity):
             raise WorkspaceError(
                 "io_error", "refresh_cleanup_identity_changed",
@@ -1109,34 +1366,54 @@ def _refresh_or_noop(root: Path, core: CoreRunner) -> dict[str, Any]:
                 data={"published": True, "residue": [str(backup)]},
             ) from exc
         _validate_recognized(root, core)
-        response = result("collaborative_workspace.prepare", {
+        response_data: dict[str, Any] = {
             "action": "refreshed", "state": candidate_manifest["quality"],
             "workspace_id": outer["workspace_id"], "generation": candidate_manifest["generation"],
-            "source_items": len(items), "warnings": candidate_manifest["warnings"],
-        })
+            "source_items": len(active_items), "warnings": candidate_manifest["warnings"],
+        }
+        if retired_paths:
+            assert batch_name is not None
+            response_data["archive_batch"] = f"{OUTDATED}/{batch_name}"
+            response_data["archived_sources"] = list(retired_paths)
+        response = result("collaborative_workspace.prepare", response_data)
         cleanup_attempted = True
         residue = _cleanup_stage(stage)
         if residue:
             raise WorkspaceError("io_error", "stage_cleanup_failed", data={"published": True, "residue": residue})
         return response
+    except WorkspaceError as exc:
+        if not published:
+            residues = _restore_outer_moves(moved, outer_batch, outer_batch_identity)
+            if residues:
+                exc.data = {**exc.data, "residue": residues}
+        raise
     except OSError as exc:
-        raise WorkspaceError("io_error", "refresh_publish_failed", data={"published": published}) from exc
+        residues = [] if published else _restore_outer_moves(moved, outer_batch, outer_batch_identity)
+        data: dict[str, Any] = {"published": published}
+        if residues:
+            data["residue"] = residues
+        raise WorkspaceError("io_error", "refresh_publish_failed", data=data) from exc
     finally:
         if not cleanup_attempted:
             _cleanup_stage(stage)
 
 
-def prepare(root: Path) -> dict[str, Any]:
+def prepare(root: Path, outdate: tuple[str, ...] | list[str] = ()) -> dict[str, Any]:
     root = _absolute_root(root, missing=True)
+    outdate_paths = _canonical_outdate_paths(outdate)
     try:
         core = CoreRunner()
         with _writer_lock(root):
             if not root.exists():
+                if outdate_paths:
+                    raise WorkspaceError("validation_error", "outdate_requires_recognized_workspace")
                 return _create_missing(root, core)
             _identity(root, directory=True)
             if not (root / OUTER_MANIFEST).exists():
+                if outdate_paths:
+                    raise WorkspaceError("validation_error", "outdate_requires_recognized_workspace")
                 return _adopt(root, core)
-            return _refresh_or_noop(root, core)
+            return _refresh_or_noop(root, core, outdate_paths)
     except CoreFailure as exc:
         raise WorkspaceError(exc.status, exc.code, data=exc.data) from exc
 

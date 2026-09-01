@@ -15,11 +15,11 @@ import stat
 import zipfile
 
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 DISTRIBUTION = "cortex-collaborative-workspace"
 IMPORT_NAME = "cortex_collaborative_workspace"
-WHEEL_NAME = "cortex_collaborative_workspace-1.0.0-py3-none-any.whl"
-DIST_INFO = "cortex_collaborative_workspace-1.0.0.dist-info"
+WHEEL_NAME = "cortex_collaborative_workspace-1.1.0-py3-none-any.whl"
+DIST_INFO = "cortex_collaborative_workspace-1.1.0.dist-info"
 SKILL = "cortex-collaborative-workspace"
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 SOURCE_FILES = {"__init__.py", "__main__.py", "cli.py", "core_runner.py", "workspace.py"}
@@ -53,7 +53,7 @@ def _source(root: Path) -> list[tuple[str, bytes]]:
         raise RuntimeError("Collaborative Workspace source package is incomplete")
     project = (root / "collaborative_workspace_runtime" / "pyproject.toml").read_text("utf-8")
     for exact in (
-        'name = "cortex-collaborative-workspace"', 'version = "1.0.0"', 'dependencies = []',
+        'name = "cortex-collaborative-workspace"', 'version = "1.1.0"', 'dependencies = []',
     ):
         if exact not in project:
             raise RuntimeError("Collaborative Workspace project contract mismatch")
@@ -66,7 +66,7 @@ def _wheel(root: Path) -> bytes:
     members = _source(root)
     members.extend((
         (f"{DIST_INFO}/METADATA", (
-            "Metadata-Version: 2.1\nName: cortex-collaborative-workspace\nVersion: 1.0.0\n"
+            "Metadata-Version: 2.1\nName: cortex-collaborative-workspace\nVersion: 1.1.0\n"
             "Summary: Explicit Collaborative Workspace and Agent Workbench runtime for Cortex\n"
             "Requires-Python: >=3.11,<3.12\n\n"
         ).encode()),
@@ -98,8 +98,8 @@ import sys
 import unicodedata
 import zipfile
 
-VERSION = "1.0.0"
-WHEEL = "cortex_collaborative_workspace-1.0.0-py3-none-any.whl"
+VERSION = "1.1.0"
+WHEEL = "cortex_collaborative_workspace-1.1.0-py3-none-any.whl"
 DIGEST = "__DIGEST__"
 BOOTSTRAP_EXIT = 70
 
@@ -141,10 +141,10 @@ def _run() -> int:
         if hashlib.sha256(raw).hexdigest() != DIGEST: raise BootstrapError("wheel_digest_mismatch")
         with zipfile.ZipFile(wheel) as archive:
             names = archive.namelist()
-            metadata_name = "cortex_collaborative_workspace-1.0.0.dist-info/METADATA"
+            metadata_name = "cortex_collaborative_workspace-1.1.0.dist-info/METADATA"
             if len(names) != len(set(names)) or metadata_name not in names: raise BootstrapError("wheel_metadata_invalid")
             metadata = archive.read(metadata_name).decode("utf-8")
-            if "Name: cortex-collaborative-workspace\n" not in metadata or "Version: 1.0.0\n" not in metadata or "Requires-Dist:" in metadata: raise BootstrapError("wheel_metadata_invalid")
+            if "Name: cortex-collaborative-workspace\n" not in metadata or "Version: 1.1.0\n" not in metadata or "Requires-Dist:" in metadata: raise BootstrapError("wheel_metadata_invalid")
             if any(name.endswith("entry_points.txt") for name in names): raise BootstrapError("wheel_entry_point_forbidden")
     except BootstrapError: raise
     except Exception as exc: raise BootstrapError("wheel_invalid") from exc

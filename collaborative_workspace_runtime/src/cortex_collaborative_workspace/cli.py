@@ -28,6 +28,8 @@ def _parser() -> Parser:
     for action in ("prepare", "status", "validate"):
         command = commands.add_parser(action)
         command.add_argument("--root", required=True)
+        if action == "prepare":
+            command.add_argument("--outdate", action="append", default=[])
     return parser
 
 
@@ -45,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
         command = "collaborative_workspace." + args.action
         root = Path(args.root)
         if args.action == "prepare":
-            value = workspace.prepare(root)
+            value = workspace.prepare(root, tuple(args.outdate))
         elif args.action == "status":
             value = workspace.status(root)
         else:
