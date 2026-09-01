@@ -12,6 +12,7 @@ RUNTIMES = CANONICAL
 NOTES = ("cortex-notes-ingest", "cortex-notes-build", "cortex-notes-manage")
 ROLES = (*CANONICAL, *NOTES)
 ROUTER = "cortex"
+WORKSPACE = "cortex-collaborative-workspace"
 WRITE_OWNERS = {
     "align.apply": "cortex-kb-manage",
     "manage.init": "cortex-kb-build",
@@ -124,7 +125,7 @@ def test_taxonomy_sc007_core_runtime_is_invariant_and_plugin_is_v9() -> None:
     package = json.loads((ROOT / "package.json").read_text("utf-8"))
     plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text("utf-8"))
     assert package == {"name": "cortex-record-kb", "version": "8.0.0", "description": "Minimal single-writer record knowledge base."}
-    assert plugin["version"] == "9.0.0" and "Explicit-only Cortex router" in plugin["description"]
+    assert plugin["version"] == "10.0.0" and "Collaborative Workspace" in plugin["description"]
     assert (ROOT / "tools" / "migrate_layout.py").is_file()
 
 
@@ -142,28 +143,30 @@ def test_taxonomy_runtime_and_batch_owner_lists_are_ordered_and_exact() -> None:
 def test_taxonomy_sc008_router_matrix_is_instruction_only_and_fail_closed() -> None:
     router = _skill(ROUTER)
     assert not (ROOT / "skills" / ROUTER / "scripts").exists()
-    for domain in ("KB", "Notes"):
+    for domain in ("KB", "Notes", "Collaborative Workspace"):
         assert domain in router
     for action in ("build", "ingest", "manage"):
         assert action in router
     for role in ROLES:
         assert f"../{role}/SKILL.md" in router
+    assert f"../{WORKSPACE}/SKILL.md" in router
     for required in (
-        "exactly one domain", "exactly one action", "read and follow exactly one sibling role skill",
+        "exactly one domain", "exactly one action", "read and follow exactly one sibling skill",
         "ask for clarification", "required existing state is missing", "fail closed",
         "no scripts, runtime, domain operations, CLI forms, or confirmation logic",
     ):
         assert required in router
 
 
-def test_taxonomy_sc009_all_seven_are_explicit_only_with_minimal_metadata() -> None:
+def test_taxonomy_sc009_all_eight_are_explicit_only_with_minimal_metadata() -> None:
     fixture = json.loads((ROOT / "fixtures" / "capabilities" / "cortex7-surface.json").read_text("utf-8"))
     taxonomy = fixture["skill_taxonomy"]
     assert taxonomy["router"] == ROUTER
     assert taxonomy["canonical_roles"] == list(ROLES)
-    assert taxonomy["invocation_policy"] == {name: "explicit-only" for name in (ROUTER, *ROLES)}
+    assert taxonomy["domain_skills"] == [WORKSPACE]
+    assert taxonomy["invocation_policy"] == {name: "explicit-only" for name in (ROUTER, *ROLES, WORKSPACE)}
     assert taxonomy["router_runtime"] is False
-    for name in (ROUTER, *ROLES):
+    for name in (ROUTER, *ROLES, WORKSPACE):
         skill = _skill(name)
         metadata = _frontmatter(skill)
         assert "Explicit invocation only" in metadata["description"]
@@ -173,4 +176,5 @@ def test_taxonomy_sc009_all_seven_are_explicit_only_with_minimal_metadata() -> N
         )
     assert (ROOT / "CLAUDE.md").read_text("utf-8") == "@AGENTS.md\n"
     agents = (ROOT / "AGENTS.md").read_text("utf-8")
-    assert "one instruction-only non-role router" in agents and "exactly six canonical roles" in agents
+    assert "one instruction-only non-role router" in agents and "exactly six canonical KB/Notes roles" in agents
+    assert "one independent `cortex-collaborative-workspace` domain skill" in agents

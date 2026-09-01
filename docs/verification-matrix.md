@@ -32,6 +32,10 @@ The scenario identifiers and scope below are the frozen acceptance baseline. The
 | sc-026 | Scoped EOL rules and a disposable Git clone preserve exact LF/marker behavior. | Generator `check-attr`/raw-byte checks; exact candidate materialization in a disposable clone is reserved for official Testing |
 | sc-027 | An actual producer bundle is accepted by packaged Cortex end to end. | Task-local producer-to-packaged-runtime integration |
 | sc-028 | Documentation and root guidance describe the explicit external Core boundary, runner requirement, and manage-owned alignment routes. | Documentation/guidance assertions and runtime contract tests |
+| workspace-sc001 | Missing-root creation and safe adoption publish complete, Core-valid outer and inner contracts without changing raw ref or safe extras. | `tests/test_collaborative_workspace.py` |
+| workspace-sc002 | Canonical inventory preserves complete basenames, copies KUs byte-for-byte, rejects unsupported/control inputs together, and receives provider output only from task-owned snapshots. | `tests/test_collaborative_workspace.py` |
+| workspace-sc003 | Exact no-op is byte-identical; stale refresh replaces only prepared ref, preserves output, and refuses nonempty temp as busy. | `tests/test_collaborative_workspace.py` |
+| workspace-sc004 | The isolated skill wheel, launcher, manifest, closed CLI, router entry, and explicit-only metadata are deterministic and tamper-evident. | `tests/test_collaborative_workspace_runtime.py` |
 | sc-029 | The Chinese feasibility memo contains the frozen decision matrix, triggers, migration path, and no-central-runtime recommendation. | Candidate memo content/hash verification |
 | sc-030 | Disposable multi-repository fault/resume, pre-cleanup verification, and cleanup leave only intended deliverables. | Task-local closeout verification |
 
@@ -61,14 +65,14 @@ Repository boundary vocabulary: candidate under KB root; candidate under source 
 | Taxonomy scenario | Frozen semantic |
 |---|---|
 | taxonomy-sc001 | Canonical discovery exposes ingest, build, and manage with disjoint exact write ownership. |
-| taxonomy-sc002 | Both legacy aliases are removed; repository taxonomy contains exactly six canonical KB and Notes skills. |
+| taxonomy-sc002 | Both legacy aliases are removed; repository taxonomy keeps exactly six canonical KB/Notes roles plus one isolated Collaborative Workspace domain skill. |
 | taxonomy-sc003 | Build requires one explicit active session and full operands for new or resumed targets. |
 | taxonomy-sc004 | Build candidates retain keyed Tags/membership and Registry id-to-path mappings and reject contraction prewrite. |
 | taxonomy-sc005 | Populated bytes freeze; configured maximum expansion is Layout-before-Tags; null sentinel is Tags-before-Layout. |
 | taxonomy-sc006 | First failure stops later mutation and reports completed_steps, failed_step, residual_path, orphan, and the core Result. |
-| taxonomy-sc007 | KB core routes, profiles, version, source tree, package metadata, migration utility, and three KB wheels remain unchanged; repository taxonomy is one router plus six roles. |
-| taxonomy-sc008 | `cortex` is an instruction-only explicit router that selects exactly one KB/Notes × build/ingest/manage role and packages no runtime. |
-| taxonomy-sc009 | All seven skills disable implicit invocation; generic note, KB, and coding requests are insufficient triggers. |
+| taxonomy-sc007 | KB core routes, profiles, version, source tree, package metadata, migration utility, and three KB wheels remain unchanged; repository taxonomy is one router, six KB/Notes roles, and one isolated Workspace domain skill. |
+| taxonomy-sc008 | `cortex` is an instruction-only explicit router that selects exactly one KB/Notes × build/ingest/manage role or the one Collaborative Workspace skill, and packages no runtime. |
+| taxonomy-sc009 | All eight skills disable implicit invocation; generic workspace, note, KB, and coding requests are insufficient triggers. |
 
 | Notes 2 scenario | Frozen semantic |
 |---|---|

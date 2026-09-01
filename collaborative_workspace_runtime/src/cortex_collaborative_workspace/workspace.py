@@ -1,0 +1,1177 @@
+"""Dependency-free Collaborative Workspace / Agent Workbench v1 engine."""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from dataclasses import dataclass
+import ctypes
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+import unicodedata
+import uuid
+from typing import Any, Iterator
+
+from .core_runner import CoreFailure, CoreRunner, INNER_CONTRACT, OUTER_CONTRACT
+
+
+VERSION = "1.0.0"
+RESULT_CODES = {"ok": 0, "usage_error": 2, "validation_error": 3, "busy": 5, "io_error": 6}
+OUTER_MANIFEST = "collaborative-workspace.json"
+INNER_MANIFEST = ".agent-workbench.json"
+OUTER_GUIDES = ("AGENTS.md", "CLAUDE.md")
+OUTER_ROLES = ("ref", "agent-workbench")
+INNER_ROLES = ("ref", "temp", "output")
+DENY_FILES = frozenset({
+    "agents.md", "agents.override.md", "claude.md", "claude.local.md", ".cursorrules", ".mcp.json",
+})
+DENY_DIRECTORIES = frozenset({".claude", ".cursor"})
+WINDOWS_RESERVED = frozenset({
+    "CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10)),
+})
+FILE_CONVERSION_SUFFIXES = frozenset({
+    ".pdf", ".doc", ".docx", ".docm", ".ppt", ".pptx", ".pptm", ".pps", ".ppsx",
+    ".xls", ".xlsx", ".xlsm", ".xlsb",
+})
+MARKDOWN_CONVERSION_SUFFIXES = frozenset({
+    ".pot", ".ppsm", ".odt", ".ods", ".odp", ".rtf", ".epub", ".csv", ".html", ".json",
+    ".jsonl", ".xml", ".md", ".jpg", ".jpeg", ".png", ".gif", ".mp3", ".wav", ".mp4",
+    ".zip", ".txt",
+})
+PROVIDER_BINDINGS = {
+    "file-conversion": ("FILE_CONVERSION_RUNNER", "FILE_CONVERSION_CONFIG"),
+    "markdown-conversion": ("MARKDOWN_CONVERSION_RUNNER", "MARKDOWN_CONVERSION_CONFIG"),
+}
+SAFE_COMPONENT = re.compile(r'^[^<>:"/\\|?*\x00-\x1f]+$')
+
+
+class WorkspaceError(Exception):
+    def __init__(
+        self,
+        status: str,
+        code: str,
+        *,
+        data: dict[str, Any] | None = None,
+        issues: list[dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(code)
+        self.status = status
+        self.code = code
+        self.data = data or {}
+        self.issues = issues or [{"code": code}]
+
+
+def result(command: str, data: dict[str, Any]) -> dict[str, Any]:
+    return {"status": "ok", "exit_code": 0, "command": command, "data": data, "issues": []}
+
+
+def failure(command: str, exc: WorkspaceError) -> dict[str, Any]:
+    return {
+        "status": exc.status,
+        "exit_code": RESULT_CODES[exc.status],
+        "command": command,
+        "data": exc.data,
+        "issues": exc.issues,
+    }
+
+
+@dataclass(frozen=True)
+class Identity:
+    device: int
+    inode: int
+    mode: int
+
+
+@dataclass(frozen=True)
+class SourceItem:
+    relative: str
+    kind: str
+    digest: str
+    source: Path
+
+    def record(self) -> dict[str, str]:
+        return {"path": self.relative, "kind": self.kind, "digest": self.digest}
+
+
+@dataclass(frozen=True)
+class Stage:
+    root: Path
+    identity: Identity
+    candidate: Path
+    snapshots: Path
+
+
+@dataclass(frozen=True)
+class Installed:
+    path: Path
+    identity: Identity
+    kind: str
+    digest: str | None = None
+
+
+def _issue(code: str, path: str | None = None, **details: Any) -> dict[str, Any]:
+    value: dict[str, Any] = {"code": code}
+    if path is not None:
+        value["path"] = path
+    value.update(details)
+    return value
+
+
+def _merge_issues(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[bytes] = set()
+    for group in groups:
+        for item in group:
+            key = _canonical_json(item)
+            if key not in seen:
+                seen.add(key)
+                result.append(item)
+    return result
+
+
+def _canonical_json(value: object) -> bytes:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _json_file_bytes(value: object) -> bytes:
+    return _canonical_json(value) + b"\n"
+
+
+def _sha256(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _is_reparse(info: os.stat_result) -> bool:
+    return bool(getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
+def _identity(path: Path, *, directory: bool | None = None, missing: bool = False) -> Identity | None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        if missing:
+            return None
+        raise WorkspaceError("validation_error", "path_missing", data={"path": str(path)})
+    except OSError as exc:
+        raise WorkspaceError("io_error", "path_unreadable", data={"path": str(path)}) from exc
+    if stat.S_ISLNK(info.st_mode) or _is_reparse(info):
+        raise WorkspaceError("validation_error", "linked_or_reparse_path", data={"path": str(path)})
+    if directory is True and not stat.S_ISDIR(info.st_mode):
+        raise WorkspaceError("validation_error", "directory_required", data={"path": str(path)})
+    if directory is False and not stat.S_ISREG(info.st_mode):
+        raise WorkspaceError("validation_error", "ordinary_file_required", data={"path": str(path)})
+    if directory is None and not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+        raise WorkspaceError("validation_error", "nonordinary_path", data={"path": str(path)})
+    return Identity(int(info.st_dev), int(info.st_ino), int(info.st_mode))
+
+
+def _same_identity(path: Path, expected: Identity) -> bool:
+    try:
+        return _identity(path) == expected
+    except WorkspaceError:
+        return False
+
+
+def _absolute_root(path: Path, *, missing: bool = True) -> Path:
+    if not path.is_absolute() or any(part in (".", "..") for part in path.parts):
+        raise WorkspaceError("usage_error", "absolute_root_required")
+    target = Path(os.path.abspath(path))
+    current = target if target.exists() else target.parent
+    while True:
+        _identity(current, directory=True)
+        if current.parent == current:
+            break
+        current = current.parent
+    found = _identity(target, directory=True, missing=True)
+    if found is None and not missing:
+        raise WorkspaceError("validation_error", "workspace_missing")
+    return target
+
+
+def _safe_component(value: str) -> None:
+    if (
+        value == "" or value in (".", "..") or unicodedata.normalize("NFC", value) != value
+        or value[-1:] in (" ", ".") or not SAFE_COMPONENT.fullmatch(value)
+        or any(unicodedata.category(char) == "Cc" for char in value)
+    ):
+        raise WorkspaceError("validation_error", "unsafe_component")
+    if value.split(".", 1)[0].upper() in WINDOWS_RESERVED:
+        raise WorkspaceError("validation_error", "reserved_component")
+
+
+def _path_key(value: str) -> str:
+    return unicodedata.normalize("NFC", value).casefold()
+
+
+def _entries(path: Path) -> list[Path]:
+    _identity(path, directory=True)
+    try:
+        entries = sorted(path.iterdir(), key=lambda item: item.name.encode("utf-8"))
+    except OSError as exc:
+        raise WorkspaceError("io_error", "directory_unreadable", data={"path": str(path)}) from exc
+    seen: set[str] = set()
+    for entry in entries:
+        try:
+            _safe_component(entry.name)
+        except WorkspaceError as exc:
+            raise WorkspaceError(exc.status, exc.code, data={"path": str(entry)}) from exc
+        key = _path_key(entry.name)
+        if key in seen:
+            raise WorkspaceError("validation_error", "casefold_collision", data={"path": str(entry)})
+        seen.add(key)
+        _identity(entry)
+    return entries
+
+
+def _file_digest(path: Path) -> str:
+    before = _identity(path, directory=False)
+    assert before is not None
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            while True:
+                chunk = stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    except OSError as exc:
+        raise WorkspaceError("io_error", "source_read_failed", data={"path": str(path)}) from exc
+    if _identity(path, directory=False) != before:
+        raise WorkspaceError("validation_error", "source_changed_during_scan", data={"path": str(path)})
+    return digest.hexdigest()
+
+
+def _tree_records_once(root: Path) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+
+    def visit(directory: Path, relative: Path) -> None:
+        for entry in _entries(directory):
+            rel = (relative / entry.name).as_posix()
+            info = _identity(entry)
+            assert info is not None
+            if stat.S_ISDIR(info.mode):
+                records.append({"kind": "directory", "path": rel})
+                visit(entry, relative / entry.name)
+            else:
+                records.append({"digest": _file_digest(entry), "kind": "file", "path": rel})
+
+    visit(root, Path())
+    return sorted(records, key=lambda item: item["path"].encode("utf-8"))
+
+
+def _tree_digest(root: Path) -> str:
+    first = _tree_records_once(root)
+    second = _tree_records_once(root)
+    if first != second:
+        raise WorkspaceError("validation_error", "tree_changed_during_scan", data={"path": str(root)})
+    return _sha256(_canonical_json(first))
+
+
+def _copy_file(source: Path, destination: Path, expected_digest: str | None = None) -> Installed:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    before = _identity(source, directory=False)
+    assert before is not None
+    digest = hashlib.sha256()
+    created_identity: Identity | None = None
+    try:
+        with source.open("rb") as incoming, destination.open("xb") as outgoing:
+            created = os.fstat(outgoing.fileno())
+            created_identity = Identity(int(created.st_dev), int(created.st_ino), int(created.st_mode))
+            while True:
+                chunk = incoming.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+                outgoing.write(chunk)
+    except OSError as exc:
+        if created_identity is not None and _same_identity(destination, created_identity):
+            try:
+                destination.unlink()
+            except OSError:
+                pass
+        raise WorkspaceError("io_error", "source_snapshot_failed", data={"path": str(source)}) from exc
+    observed = digest.hexdigest()
+    assert created_identity is not None
+    copied = Installed(destination, created_identity, "file", observed)
+    try:
+        source_unchanged = _identity(source, directory=False) == before
+    except WorkspaceError as exc:
+        residue = _cleanup_installed([copied])
+        if residue:
+            exc.data = {**exc.data, "residue": residue}
+        raise
+    if not source_unchanged or (expected_digest is not None and observed != expected_digest):
+        residue = _cleanup_installed([copied])
+        data: dict[str, Any] = {"path": str(source)}
+        if residue:
+            data["residue"] = residue
+        raise WorkspaceError("validation_error", "source_changed_during_snapshot", data=data)
+    return copied
+
+
+def _copy_tree(source: Path, destination: Path, expected_digest: str) -> None:
+    destination.mkdir()
+
+    def visit(src: Path, dst: Path) -> None:
+        for entry in _entries(src):
+            target = dst / entry.name
+            info = _identity(entry)
+            assert info is not None
+            if stat.S_ISDIR(info.mode):
+                target.mkdir()
+                visit(entry, target)
+            else:
+                _copy_file(entry, target)
+
+    visit(source, destination)
+    if _tree_digest(destination) != expected_digest or _tree_digest(source) != expected_digest:
+        raise WorkspaceError("validation_error", "source_changed_during_snapshot", data={"path": str(source)})
+
+
+def _source_tree_digest(items: list[SourceItem]) -> str:
+    return _sha256(_canonical_json([item.record() for item in items]))
+
+
+def _records(items: list[SourceItem]) -> list[dict[str, str]]:
+    return [item.record() for item in items]
+
+
+def _scan_source(reference: Path | None, core: CoreRunner) -> tuple[list[SourceItem], list[dict[str, Any]]]:
+    if reference is None or not reference.exists():
+        return [], []
+    try:
+        _identity(reference, directory=True)
+    except WorkspaceError as exc:
+        return [], [_issue(exc.code, "ref")]
+    items: list[SourceItem] = []
+    issues: list[dict[str, Any]] = []
+
+    def visit(directory: Path, relative: Path) -> None:
+        try:
+            entries = _entries(directory)
+        except WorkspaceError as exc:
+            issues.append(_issue(exc.code, relative.as_posix() or "ref"))
+            return
+        by_fold = {_path_key(entry.name): entry for entry in entries}
+        has_agents = "agents.md" in by_fold
+        has_claude = "claude.md" in by_fold
+        if has_agents or has_claude:
+            unit_path = relative.as_posix()
+            if not (has_agents and has_claude and by_fold["agents.md"].name == "AGENTS.md"
+                    and by_fold["claude.md"].name == "CLAUDE.md"):
+                issues.append(_issue("instruction_control_source", unit_path or "ref"))
+                return
+            checked = core.knowledge_unit_validate(directory, allow_invalid=True)
+            if checked["status"] != "ok":
+                for item in checked["issues"] or [{"code": "invalid_knowledge_unit"}]:
+                    issues.append(_issue(str(item["code"]), unit_path or "ref", source_kind="knowledge_unit"))
+                return
+            if not unit_path:
+                issues.append(_issue("reference_root_cannot_be_knowledge_unit", "ref"))
+                return
+            try:
+                items.append(SourceItem(unit_path, "knowledge_unit", _tree_digest(directory), directory))
+            except WorkspaceError as exc:
+                issues.append(_issue(exc.code, unit_path))
+            return
+        for entry in entries:
+            rel = relative / entry.name
+            canonical = rel.as_posix()
+            folded = _path_key(entry.name)
+            info = _identity(entry)
+            assert info is not None
+            if stat.S_ISDIR(info.mode):
+                if folded in DENY_DIRECTORIES:
+                    issues.append(_issue("instruction_control_source", canonical))
+                else:
+                    visit(entry, rel)
+            else:
+                if folded in DENY_FILES:
+                    issues.append(_issue("instruction_control_source", canonical))
+                    continue
+                try:
+                    items.append(SourceItem(canonical, "file", _file_digest(entry), entry))
+                except WorkspaceError as exc:
+                    issues.append(_issue(exc.code, canonical))
+
+    visit(reference, Path())
+    items.sort(key=lambda item: item.relative.encode("utf-8"))
+    seen: dict[str, str] = {}
+    for item in items:
+        key = _path_key(item.relative)
+        if key in seen:
+            issues.append(_issue("projection_path_collision", item.relative, other_path=seen[key]))
+        seen[key] = item.relative
+    paths = [item.relative.split("/") for item in items]
+    for index, left in enumerate(paths):
+        for right in paths[index + 1:]:
+            if len(left) < len(right) and [_path_key(x) for x in left] == [_path_key(x) for x in right[:len(left)]]:
+                issues.append(_issue("projection_path_prefix_collision", "/".join(right), other_path="/".join(left)))
+    return items, issues
+
+
+def _route(item: SourceItem) -> str | None:
+    if item.kind == "knowledge_unit":
+        return "knowledge-unit-copy"
+    suffix = Path(item.relative).suffix.casefold()
+    if suffix in FILE_CONVERSION_SUFFIXES:
+        return "file-conversion"
+    if suffix in MARKDOWN_CONVERSION_SUFFIXES:
+        return "markdown-conversion"
+    return None
+
+
+def _ordinary_absolute_file(raw: str | None, missing_code: str, relative_code: str) -> Path:
+    if not raw:
+        raise WorkspaceError("usage_error", missing_code)
+    path = Path(raw)
+    if not path.is_absolute():
+        raise WorkspaceError("usage_error", relative_code)
+    absolute = Path(os.path.abspath(path))
+    _identity(absolute, directory=False)
+    current = absolute.parent
+    while True:
+        _identity(current, directory=True)
+        if current.parent == current:
+            break
+        current = current.parent
+    return absolute
+
+
+def _provider_binding(route: str) -> tuple[Path, Path]:
+    runner_env, config_env = PROVIDER_BINDINGS[route]
+    runner = _ordinary_absolute_file(os.environ.get(runner_env), runner_env.lower() + "_required",
+                                     runner_env.lower() + "_not_absolute")
+    config = _ordinary_absolute_file(os.environ.get(config_env), config_env.lower() + "_required",
+                                     config_env.lower() + "_not_absolute")
+    return runner, config
+
+
+def _provider_quality(unit: Path, basename: str) -> tuple[str, list[str]]:
+    sidecar = unit / f"{basename}.json"
+    _identity(sidecar, directory=False)
+    try:
+        value = json.loads(sidecar.read_bytes().decode("utf-8", errors="strict"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise WorkspaceError("validation_error", "provider_metadata_invalid") from exc
+    quality = value.get("quality") if isinstance(value, dict) else None
+    if not isinstance(quality, dict) or quality.get("status") not in {
+        "complete", "complete_with_warnings", "partial",
+    }:
+        raise WorkspaceError("validation_error", "provider_quality_invalid")
+    raw_warnings = quality.get("warnings", [])
+    if not isinstance(raw_warnings, list):
+        raise WorkspaceError("validation_error", "provider_quality_invalid")
+    warning_codes: list[str] = []
+    for warning in raw_warnings:
+        if (
+            not isinstance(warning, dict)
+            or not isinstance(warning.get("code"), str)
+            or re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,127}", warning["code"]) is None
+        ):
+            raise WorkspaceError("validation_error", "provider_quality_invalid")
+        warning_codes.append(warning["code"])
+    if quality["status"] != "complete" and not warning_codes:
+        warning_codes.append("provider_" + str(quality["status"]))
+    return ("ready_with_warnings" if warning_codes else "ready", sorted(set(warning_codes)))
+
+
+def _run_provider(route: str, snapshot: Path, output_parent: Path, expected_unit: Path) -> tuple[str, list[str]]:
+    runner, config = _provider_binding(route)
+    command = [
+        sys.executable, "-I", str(runner), "--config", str(config), "--input", str(snapshot),
+        "--output-dir", str(output_parent), "--bundle-name-mode", "source-basename",
+    ]
+    try:
+        completed = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, timeout=1200, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise WorkspaceError("io_error", "provider_process_failed", data={"provider_route": route}) from exc
+    if completed.returncode != 0:
+        raise WorkspaceError(
+            "validation_error", "provider_conversion_failed",
+            data={"provider_route": route, "provider_exit_code": completed.returncode},
+        )
+    _identity(expected_unit, directory=True)
+    return _provider_quality(expected_unit, snapshot.name)
+
+
+def _manifest_item(item: SourceItem, unit: Path, route: str, quality: str, issues: list[str]) -> dict[str, Any]:
+    return {
+        "source_path": item.relative,
+        "source_kind": item.kind,
+        "source_digest": item.digest,
+        "unit_path": item.relative,
+        "prepared_digest": _tree_digest(unit),
+        "provider_route": route,
+        "quality": quality,
+        "issues": issues,
+    }
+
+
+def _write_json_exclusive(path: Path, value: object) -> None:
+    try:
+        with path.open("xb") as stream:
+            stream.write(_json_file_bytes(value))
+    except OSError as exc:
+        raise WorkspaceError("io_error", "exclusive_create_failed", data={"path": str(path)}) from exc
+
+
+def _new_stage(root: Path) -> Stage:
+    parent = root.parent
+    parent_identity = _identity(parent, directory=True)
+    assert parent_identity is not None
+    stage_root: Path | None = None
+    try:
+        stage_root = Path(tempfile.mkdtemp(prefix=".cortex-collaborative-workspace-", dir=parent))
+        candidate = stage_root / "candidate"
+        snapshots = stage_root / "snapshots"
+        candidate.mkdir()
+        snapshots.mkdir()
+    except OSError as exc:
+        if stage_root is not None:
+            try:
+                _delete_no_follow(stage_root)
+            except OSError:
+                pass
+        raise WorkspaceError("io_error", "stage_create_failed") from exc
+    stage_identity = _identity(stage_root, directory=True)
+    assert stage_identity is not None
+    if stage_identity.device != parent_identity.device:
+        try:
+            _delete_no_follow(stage_root)
+        except OSError:
+            pass
+        raise WorkspaceError("io_error", "stage_not_same_volume")
+    return Stage(stage_root, stage_identity, candidate, snapshots)
+
+
+def _delete_no_follow(path: Path) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(info.st_mode) or _is_reparse(info):
+        try:
+            path.unlink()
+        except OSError:
+            path.rmdir()
+        return
+    if stat.S_ISDIR(info.st_mode):
+        for entry in sorted(path.iterdir(), key=lambda item: item.name.encode("utf-8"), reverse=True):
+            _delete_no_follow(entry)
+        path.rmdir()
+        return
+    if stat.S_ISREG(info.st_mode):
+        path.unlink()
+        return
+    raise OSError("nonordinary cleanup entry")
+
+
+def _cleanup_stage(stage: Stage) -> list[str]:
+    if not _same_identity(stage.root, stage.identity):
+        return [str(stage.root)]
+    try:
+        _delete_no_follow(stage.root)
+        return []
+    except OSError:
+        return [str(stage.root)]
+
+
+def _outer_manifest(workspace_id: str) -> dict[str, Any]:
+    return {
+        "contract": OUTER_CONTRACT,
+        "workspace_id": workspace_id,
+        "roles": {"reference": "ref", "agent_workbench": "agent-workbench"},
+    }
+
+
+def _inner_manifest(
+    workspace_id: str,
+    generation: int,
+    items: list[SourceItem],
+    projected: list[dict[str, Any]],
+) -> dict[str, Any]:
+    warnings = sorted({warning for item in projected for warning in item["issues"]})
+    quality = "ready_with_warnings" if warnings else "ready"
+    return {
+        "contract": INNER_CONTRACT,
+        "workspace_id": workspace_id,
+        "generation": generation,
+        "quality": quality,
+        "source_records": _records(items),
+        "source_tree_digest": _source_tree_digest(items),
+        "items": projected,
+        "warnings": warnings,
+    }
+
+
+def _populate_candidate(stage: Stage, workspace_id: str, generation: int,
+                        items: list[SourceItem], core: CoreRunner) -> dict[str, Any]:
+    candidate = stage.candidate
+    _write_json_exclusive(candidate / OUTER_MANIFEST, _outer_manifest(workspace_id))
+    core.workspace_stage_complete(candidate, OUTER_CONTRACT)
+    workbench = candidate / "agent-workbench"
+    reference = workbench / "ref"
+    reference.mkdir()
+    projected: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for item in items:
+        route = _route(item)
+        if route is None:
+            failures.append(_issue("unsupported_source_type", item.relative))
+            continue
+        unit = reference.joinpath(*item.relative.split("/"))
+        try:
+            unit.parent.mkdir(parents=True, exist_ok=True)
+            if route == "knowledge-unit-copy":
+                _copy_tree(item.source, unit, item.digest)
+                quality, warnings = "ready", []
+            else:
+                snapshot = stage.snapshots.joinpath(*item.relative.split("/"))
+                _copy_file(item.source, snapshot, item.digest)
+                quality, warnings = _run_provider(route, snapshot, unit.parent, unit)
+                if _file_digest(snapshot) != item.digest or _file_digest(unit / "src" / snapshot.name) != item.digest:
+                    raise WorkspaceError("validation_error", "provider_source_mismatch")
+            core.knowledge_unit_validate(unit)
+            projected.append(_manifest_item(item, unit, route, quality, warnings))
+        except CoreFailure as exc:
+            failures.append(_issue(exc.code, item.relative, provider_route=route))
+        except WorkspaceError as exc:
+            details = {key: value for key, value in exc.data.items() if key not in {"path", "provider_route"}}
+            failures.append(_issue(exc.code, item.relative, provider_route=route, **details))
+    if failures:
+        raise WorkspaceError("validation_error", "projection_failed", issues=failures,
+                             data={"failed_items": len(failures)})
+    projected.sort(key=lambda item: item["source_path"].encode("utf-8"))
+    manifest = _inner_manifest(workspace_id, generation, items, projected)
+    _write_json_exclusive(reference / INNER_MANIFEST, manifest)
+    core.workspace_stage_complete(workbench, INNER_CONTRACT)
+    core.workspace_validate(workbench, INNER_CONTRACT)
+    core.workspace_validate(candidate, OUTER_CONTRACT)
+    return manifest
+
+
+def _build_candidate(root: Path, workspace_id: str, generation: int,
+                     items: list[SourceItem], core: CoreRunner) -> tuple[Stage, dict[str, Any]]:
+    stage = _new_stage(root)
+    try:
+        return stage, _populate_candidate(stage, workspace_id, generation, items, core)
+    except Exception:
+        _cleanup_stage(stage)
+        raise
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    _identity(path, directory=False)
+    try:
+        value = json.loads(path.read_bytes().decode("utf-8", errors="strict"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise WorkspaceError("validation_error", "manifest_invalid", data={"path": str(path)}) from exc
+    if not isinstance(value, dict):
+        raise WorkspaceError("validation_error", "manifest_invalid", data={"path": str(path)})
+    return value
+
+
+def _manifest_pair(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    return _read_json(root / OUTER_MANIFEST), _read_json(root / "agent-workbench" / "ref" / INNER_MANIFEST)
+
+
+def _fixed_route_issues(inner_manifest: dict[str, Any], items: list[SourceItem]) -> list[dict[str, Any]]:
+    issues = [
+        _issue("unsupported_source_type", item.relative)
+        for item in items if _route(item) is None
+    ]
+    if inner_manifest.get("source_records") != _records(items):
+        return issues
+    raw_items = inner_manifest.get("items")
+    if not isinstance(raw_items, list):
+        return issues
+    by_path = {
+        item.get("source_path"): item
+        for item in raw_items if isinstance(item, dict) and isinstance(item.get("source_path"), str)
+    }
+    for source in items:
+        expected = _route(source)
+        if expected is None:
+            continue
+        projected = by_path.get(source.relative)
+        actual = projected.get("provider_route") if isinstance(projected, dict) else None
+        if actual != expected:
+            issues.append(_issue(
+                "provider_route_mismatch", source.relative, expected_provider_route=expected,
+            ))
+    return issues
+
+
+def _validate_recognized(
+    root: Path, core: CoreRunner,
+) -> tuple[dict[str, Any], dict[str, Any], list[SourceItem]]:
+    outer = core.workspace_validate(root, OUTER_CONTRACT, allow_invalid=True)
+    inner_path = root / "agent-workbench"
+    inner = core.workspace_validate(inner_path, INNER_CONTRACT, allow_invalid=True)
+    if outer["status"] != "ok" or inner["status"] != "ok":
+        issues = [
+            _issue(str(item["code"]), str(item.get("path", "")))
+            for response in (outer, inner) for item in response["issues"]
+        ] or [_issue("workspace_invalid")]
+        raise WorkspaceError("validation_error", "workspace_invalid", issues=issues, data={"state": "invalid"})
+    outer_manifest, inner_manifest = _manifest_pair(root)
+    outer_id = outer["data"].get("workspace_id")
+    inner_id = inner["data"].get("workspace_id")
+    if (
+        outer_id != inner_id
+        or outer_manifest.get("workspace_id") != outer_id
+        or inner_manifest.get("workspace_id") != inner_id
+    ):
+        raise WorkspaceError(
+            "validation_error", "workspace_id_mismatch", data={"state": "invalid"},
+            issues=[_issue("workspace_id_mismatch")],
+        )
+    source_items, source_issues = _scan_source(root / "ref", core)
+    route_issues = _fixed_route_issues(inner_manifest, source_items)
+    recognized_issues = _merge_issues(source_issues, route_issues)
+    if recognized_issues:
+        raise WorkspaceError(
+            "validation_error", "workspace_invalid", data={"state": "invalid"},
+            issues=recognized_issues,
+        )
+    return outer_manifest, inner_manifest, source_items
+
+
+def _literal_empty(path: Path) -> Identity:
+    identity = _identity(path, directory=True)
+    assert identity is not None
+    try:
+        if next(path.iterdir(), None) is not None:
+            raise WorkspaceError("busy", "workbench_temp_not_empty", data={"state": "busy"})
+    except OSError as exc:
+        raise WorkspaceError("io_error", "directory_unreadable", data={"path": str(path)}) from exc
+    return identity
+
+
+def _reserved_adoption_issues(root: Path) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    try:
+        entries = _entries(root)
+    except WorkspaceError as exc:
+        return [_issue(exc.code)]
+    reserved = {_path_key(name): name for name in (*OUTER_GUIDES, OUTER_MANIFEST, "agent-workbench")}
+    for entry in entries:
+        folded = _path_key(entry.name)
+        if folded in reserved:
+            issues.append(_issue("adoption_reserved_path_exists", entry.name))
+        elif folded == "ref":
+            if entry.name != "ref":
+                issues.append(_issue("adoption_reference_name_mismatch", entry.name))
+            else:
+                try:
+                    _identity(entry, directory=True)
+                except WorkspaceError as exc:
+                    issues.append(_issue(exc.code, entry.name))
+        elif folded in DENY_FILES or folded in DENY_DIRECTORIES:
+            issues.append(_issue("instruction_control_extra", entry.name))
+        else:
+            entry_identity = _identity(entry)
+            assert entry_identity is not None
+            if stat.S_ISDIR(entry_identity.mode):
+                issues.extend(_unmanaged_tree_issues(entry, entry.name))
+    return issues
+
+
+def _unmanaged_tree_issues(directory: Path, prefix: str) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    try:
+        entries = _entries(directory)
+    except WorkspaceError as exc:
+        return [_issue(exc.code, prefix)]
+    for entry in entries:
+        relative = f"{prefix}/{entry.name}"
+        folded = _path_key(entry.name)
+        info = _identity(entry)
+        assert info is not None
+        if stat.S_ISDIR(info.mode):
+            if folded in DENY_DIRECTORIES:
+                issues.append(_issue("instruction_control_extra", relative))
+            else:
+                issues.extend(_unmanaged_tree_issues(entry, relative))
+        elif folded in DENY_FILES:
+            issues.append(_issue("instruction_control_extra", relative))
+    return issues
+
+
+def _state(root: Path, core: CoreRunner) -> tuple[str, dict[str, Any]]:
+    if not root.exists():
+        return "uninitialized", {"state": "uninitialized", "recognized": False}
+    _identity(root, directory=True)
+    manifest = root / OUTER_MANIFEST
+    if not manifest.exists():
+        adoption_issues = _reserved_adoption_issues(root)
+        if adoption_issues:
+            return "invalid", {"state": "invalid", "recognized": False, "blockers": adoption_issues}
+        return "uninitialized", {"state": "uninitialized", "recognized": False}
+    try:
+        outer, inner, items = _validate_recognized(root, core)
+    except WorkspaceError as exc:
+        return "invalid", {"state": "invalid", "recognized": True, "blockers": exc.issues}
+    if inner.get("source_records") != _records(items):
+        try:
+            _literal_empty(root / "agent-workbench" / "temp")
+        except WorkspaceError as exc:
+            if exc.status == "busy":
+                return "busy", {
+                    "state": "busy", "recognized": True, "workspace_id": outer.get("workspace_id"),
+                    "generation": inner.get("generation"), "blockers": exc.issues,
+                }
+            raise
+        return "stale", {
+            "state": "stale", "recognized": True, "workspace_id": outer.get("workspace_id"),
+            "generation": inner.get("generation"),
+        }
+    quality = str(inner["quality"])
+    return quality, {
+        "state": quality, "recognized": True, "workspace_id": outer["workspace_id"],
+        "generation": inner["generation"], "source_items": len(items), "warnings": inner["warnings"],
+    }
+
+
+def _lock_key(root: Path) -> str:
+    return _sha256(unicodedata.normalize("NFC", os.path.normcase(str(root))).encode("utf-8"))
+
+
+def _posix_lock_path(root: Path) -> Path:
+    return Path(tempfile.gettempdir()) / ("cortex-collaborative-workspace-" + _lock_key(root) + ".lock")
+
+
+@contextmanager
+def _windows_mutex(root: Path) -> Iterator[None]:
+    key = _lock_key(root)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateMutexW.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p)
+    kernel.CreateMutexW.restype = ctypes.c_void_p
+    kernel.ReleaseMutex.argtypes = (ctypes.c_void_p,)
+    kernel.ReleaseMutex.restype = ctypes.c_int
+    kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
+    kernel.CloseHandle.restype = ctypes.c_int
+    handle = kernel.CreateMutexW(None, 1, "Local\\CortexCollaborativeWorkspace-" + key)
+    if not handle:
+        raise WorkspaceError("io_error", "workspace_lock_failed")
+    if ctypes.get_last_error() == 183:
+        kernel.CloseHandle(handle)
+        raise WorkspaceError("busy", "workspace_busy", data={"state": "busy"})
+    try:
+        yield
+    finally:
+        kernel.ReleaseMutex(handle)
+        kernel.CloseHandle(handle)
+
+
+@contextmanager
+def _writer_lock(root: Path) -> Iterator[None]:
+    if os.name == "nt":
+        with _windows_mutex(root):
+            yield
+        return
+    import fcntl  # POSIX-only
+    lock_path = _posix_lock_path(root)
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise WorkspaceError("busy", "workspace_busy", data={"state": "busy"}) from exc
+        yield
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _read_lock(root: Path) -> Iterator[None]:
+    """Hold writer exclusion without creating or changing filesystem state."""
+    if os.name == "nt":
+        with _windows_mutex(root):
+            yield
+        return
+    import fcntl  # POSIX-only
+    try:
+        descriptor = os.open(_posix_lock_path(root), os.O_RDONLY)
+    except FileNotFoundError:
+        yield
+        return
+    except OSError as exc:
+        raise WorkspaceError("io_error", "workspace_lock_failed") from exc
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise WorkspaceError("busy", "workspace_busy", data={"state": "busy"}) from exc
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _installed_tree(path: Path) -> Installed:
+    identity = _identity(path, directory=True)
+    assert identity is not None
+    return Installed(path, identity, "tree", _tree_digest(path))
+
+
+def _cleanup_installed(values: list[Installed]) -> list[str]:
+    residues: list[str] = []
+    for value in reversed(values):
+        if not _same_identity(value.path, value.identity):
+            residues.append(str(value.path))
+            continue
+        try:
+            if value.kind == "file":
+                if _file_digest(value.path) != value.digest:
+                    residues.append(str(value.path))
+                    continue
+                value.path.unlink()
+            elif value.kind == "empty":
+                if next(value.path.iterdir(), None) is not None:
+                    residues.append(str(value.path))
+                    continue
+                value.path.rmdir()
+            else:
+                if _tree_digest(value.path) != value.digest:
+                    residues.append(str(value.path))
+                    continue
+                _delete_no_follow(value.path)
+        except (OSError, WorkspaceError):
+            residues.append(str(value.path))
+    return residues
+
+
+def _create_missing(root: Path, core: CoreRunner) -> dict[str, Any]:
+    workspace_id = str(uuid.uuid4())
+    stage, manifest = _build_candidate(root, workspace_id, 1, [], core)
+    published = False
+    try:
+        if root.exists():
+            raise WorkspaceError("validation_error", "workspace_appeared_during_prepare")
+        os.rename(stage.candidate, root)
+        published = True
+        response = result("collaborative_workspace.prepare", {
+            "action": "created", "state": manifest["quality"], "workspace_id": workspace_id,
+            "generation": 1, "source_items": 0,
+        })
+    except WorkspaceError:
+        _cleanup_stage(stage)
+        raise
+    except OSError as exc:
+        residue = _cleanup_stage(stage)
+        raise WorkspaceError("io_error", "workspace_publish_failed", data={"residue": residue}) from exc
+    residue = _cleanup_stage(stage)
+    if residue:
+        raise WorkspaceError("io_error", "stage_cleanup_failed", data={"published": published, "residue": residue})
+    return response
+
+
+def _adopt(root: Path, core: CoreRunner) -> dict[str, Any]:
+    root_identity = _identity(root, directory=True)
+    assert root_identity is not None
+    blockers = _reserved_adoption_issues(root)
+    reference = root / "ref" if (root / "ref").exists() else None
+    reference_identity = _identity(reference, directory=True) if reference is not None else None
+    items, scan_issues = _scan_source(reference, core)
+    blockers.extend(scan_issues)
+    blockers.extend(_issue("unsupported_source_type", item.relative) for item in items if _route(item) is None)
+    if blockers:
+        raise WorkspaceError("validation_error", "adoption_blocked", issues=blockers,
+                             data={"state": "invalid"})
+    workspace_id = str(uuid.uuid4())
+    stage, manifest = _build_candidate(root, workspace_id, 1, items, core)
+    installed: list[Installed] = []
+    recognized = False
+    cleanup_attempted = False
+    try:
+        second_items, second_issues = _scan_source(reference, core)
+        if second_issues or _records(second_items) != _records(items):
+            raise WorkspaceError("validation_error", "source_changed_during_prepare", issues=second_issues or None)
+        current_reference = root / "ref"
+        reference_changed = (
+            (reference_identity is None and current_reference.exists())
+            or (reference_identity is not None and not _same_identity(current_reference, reference_identity))
+        )
+        if not _same_identity(root, root_identity) or reference_changed or _reserved_adoption_issues(root):
+            raise WorkspaceError("validation_error", "workspace_changed_during_prepare")
+        for name in OUTER_GUIDES:
+            target = root / name
+            installed.append(_copy_file(stage.candidate / name, target))
+        if reference is None:
+            staged_ref = stage.candidate / "ref"
+            target_ref = root / "ref"
+            ref_identity = _literal_empty(staged_ref)
+            os.rename(staged_ref, target_ref)
+            installed.append(Installed(target_ref, ref_identity, "empty"))
+        staged_workbench = _installed_tree(stage.candidate / "agent-workbench")
+        target_workbench = root / "agent-workbench"
+        os.rename(stage.candidate / "agent-workbench", target_workbench)
+        installed.append(Installed(
+            target_workbench, staged_workbench.identity, staged_workbench.kind, staged_workbench.digest,
+        ))
+        _copy_file(stage.candidate / OUTER_MANIFEST, root / OUTER_MANIFEST)
+        recognized = True
+        _validate_recognized(root, core)
+        response = result("collaborative_workspace.prepare", {
+            "action": "adopted", "state": manifest["quality"], "workspace_id": workspace_id,
+            "generation": 1, "source_items": len(items), "warnings": manifest["warnings"],
+        })
+        cleanup_attempted = True
+        residue = _cleanup_stage(stage)
+        if residue:
+            raise WorkspaceError("io_error", "stage_cleanup_failed", data={"published": True, "residue": residue})
+        return response
+    except WorkspaceError as exc:
+        if recognized:
+            raise
+        residues = _cleanup_installed(installed)
+        if residues:
+            exc.data = {**exc.data, "residue": residues}
+        raise
+    except OSError as exc:
+        residues = [] if recognized else _cleanup_installed(installed)
+        raise WorkspaceError("io_error", "adoption_publish_failed", data={"residue": residues}) from exc
+    finally:
+        if not cleanup_attempted:
+            _cleanup_stage(stage)
+
+
+def _refresh_or_noop(root: Path, core: CoreRunner) -> dict[str, Any]:
+    try:
+        outer, inner, items = _validate_recognized(root, core)
+    except WorkspaceError as exc:
+        source_items, source_issues = _scan_source(root / "ref", core)
+        unsupported_issues = [
+            _issue("unsupported_source_type", item.relative) for item in source_items if _route(item) is None
+        ]
+        combined = _merge_issues(exc.issues, source_issues, unsupported_issues)
+        raise WorkspaceError(exc.status, exc.code, data=exc.data, issues=combined) from exc
+    root_identity = _identity(root, directory=True)
+    outer_ref = root / "ref"
+    outer_ref_identity = _identity(outer_ref, directory=True)
+    prepared_ref = root / "agent-workbench" / "ref"
+    prepared_ref_identity = _identity(prepared_ref, directory=True)
+    temp = root / "agent-workbench" / "temp"
+    if inner["source_records"] == _records(items):
+        second, issues = _scan_source(outer_ref, core)
+        if issues or _records(second) != _records(items):
+            raise WorkspaceError("validation_error", "source_changed_during_prepare", issues=issues or None)
+        return result("collaborative_workspace.prepare", {
+            "action": "no_op", "state": inner["quality"], "workspace_id": outer["workspace_id"],
+            "generation": inner["generation"], "source_items": len(items), "warnings": inner["warnings"],
+        })
+    temp_identity = _literal_empty(temp)
+    stage, candidate_manifest = _build_candidate(
+        root, str(outer["workspace_id"]), int(inner["generation"]) + 1, items, core,
+    )
+    candidate_ref = stage.candidate / "agent-workbench" / "ref"
+    backup = prepared_ref.with_name(".ref-old-" + uuid.uuid4().hex)
+    published = False
+    cleanup_attempted = False
+    try:
+        second, issues = _scan_source(outer_ref, core)
+        if issues or _records(second) != _records(items):
+            raise WorkspaceError("validation_error", "source_changed_during_prepare", issues=issues or None)
+        if (
+            not _same_identity(root, root_identity) or not _same_identity(outer_ref, outer_ref_identity)
+            or not _same_identity(prepared_ref, prepared_ref_identity)
+            or not _same_identity(temp, temp_identity)
+        ):
+            raise WorkspaceError("validation_error", "workspace_changed_during_prepare")
+        _literal_empty(temp)
+        if backup.exists():
+            raise WorkspaceError("validation_error", "refresh_backup_collision")
+        os.rename(prepared_ref, backup)
+        try:
+            os.rename(candidate_ref, prepared_ref)
+            published = True
+        except OSError:
+            os.rename(backup, prepared_ref)
+            raise
+        if not _same_identity(backup, prepared_ref_identity):
+            raise WorkspaceError(
+                "io_error", "refresh_cleanup_identity_changed",
+                data={"published": True, "residue": [str(backup)]},
+            )
+        try:
+            _delete_no_follow(backup)
+        except OSError as exc:
+            raise WorkspaceError(
+                "io_error", "refresh_cleanup_failed",
+                data={"published": True, "residue": [str(backup)]},
+            ) from exc
+        _validate_recognized(root, core)
+        response = result("collaborative_workspace.prepare", {
+            "action": "refreshed", "state": candidate_manifest["quality"],
+            "workspace_id": outer["workspace_id"], "generation": candidate_manifest["generation"],
+            "source_items": len(items), "warnings": candidate_manifest["warnings"],
+        })
+        cleanup_attempted = True
+        residue = _cleanup_stage(stage)
+        if residue:
+            raise WorkspaceError("io_error", "stage_cleanup_failed", data={"published": True, "residue": residue})
+        return response
+    except OSError as exc:
+        raise WorkspaceError("io_error", "refresh_publish_failed", data={"published": published}) from exc
+    finally:
+        if not cleanup_attempted:
+            _cleanup_stage(stage)
+
+
+def prepare(root: Path) -> dict[str, Any]:
+    root = _absolute_root(root, missing=True)
+    try:
+        core = CoreRunner()
+        with _writer_lock(root):
+            if not root.exists():
+                return _create_missing(root, core)
+            _identity(root, directory=True)
+            if not (root / OUTER_MANIFEST).exists():
+                return _adopt(root, core)
+            return _refresh_or_noop(root, core)
+    except CoreFailure as exc:
+        raise WorkspaceError(exc.status, exc.code, data=exc.data) from exc
+
+
+def status(root: Path) -> dict[str, Any]:
+    root = _absolute_root(root, missing=True)
+    try:
+        core = CoreRunner()
+        with _read_lock(root):
+            _name, data = _state(root, core)
+            return result("collaborative_workspace.status", data)
+    except CoreFailure as exc:
+        raise WorkspaceError(exc.status, exc.code, data=exc.data) from exc
+
+
+def validate(root: Path) -> dict[str, Any]:
+    root = _absolute_root(root, missing=True)
+    try:
+        core = CoreRunner()
+        with _read_lock(root):
+            state_name, data = _state(root, core)
+            if state_name in {"ready", "ready_with_warnings"}:
+                return result("collaborative_workspace.validate", {**data, "valid": True})
+            code = {
+                "uninitialized": "workspace_uninitialized", "stale": "workspace_stale",
+                "invalid": "workspace_invalid", "busy": "workbench_temp_not_empty",
+            }[state_name]
+            error_status = "busy" if state_name == "busy" else "validation_error"
+            raise WorkspaceError(error_status, code, data={**data, "valid": False},
+                                 issues=data.get("blockers") or None)
+    except CoreFailure as exc:
+        raise WorkspaceError(exc.status, exc.code, data=exc.data) from exc
+
+
+__all__ = [
+    "INNER_CONTRACT", "OUTER_CONTRACT", "VERSION", "WorkspaceError", "failure", "prepare", "result",
+    "status", "validate",
+]

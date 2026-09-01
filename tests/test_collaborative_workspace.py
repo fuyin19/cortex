@@ -1,0 +1,636 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import stat
+
+import pytest
+
+from cortex_collaborative_workspace import workspace
+from cortex_collaborative_workspace.core_runner import CoreRunner
+
+
+ROOT = Path(__file__).parents[1]
+CORE_RUNNER = ROOT.parent / "anti-entropy-core" / "scripts" / "knowledge_unit_runner.py"
+
+
+@pytest.fixture(autouse=True)
+def explicit_core(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTI_ENTROPY_CORE_RUNNER", str(CORE_RUNNER.resolve()))
+
+
+def _json(path: Path) -> dict[str, object]:
+    return json.loads(path.read_text("utf-8"))
+
+
+def _tree(root: Path) -> dict[str, bytes | None]:
+    result: dict[str, bytes | None] = {}
+    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+        result[path.relative_to(root).as_posix()] = None if path.is_dir() else path.read_bytes()
+    return result
+
+
+def _fake_providers(monkeypatch: pytest.MonkeyPatch, *, warning: bool = False) -> list[Path]:
+    observed: list[Path] = []
+
+    def convert(route: str, snapshot: Path, output_parent: Path, expected_unit: Path):
+        assert route in {"file-conversion", "markdown-conversion"}
+        assert "agent-workbench" not in snapshot.parts
+        assert snapshot.name == expected_unit.name
+        observed.append(snapshot)
+        expected_unit.mkdir()
+        basename = snapshot.name
+        (expected_unit / f"{basename}.md").write_bytes(b"# converted\n")
+        warnings = [{"code": "fixture_warning", "message": "fixture"}] if warning else []
+        metadata = {"quality": {"status": "complete_with_warnings" if warning else "complete", "warnings": warnings}}
+        (expected_unit / f"{basename}.json").write_bytes(
+            (json.dumps(metadata, separators=(",", ":")) + "\n").encode("utf-8")
+        )
+        (expected_unit / "src").mkdir()
+        (expected_unit / "src" / basename).write_bytes(snapshot.read_bytes())
+        (expected_unit / "assets").mkdir()
+        CoreRunner().knowledge_unit_stage_complete(expected_unit)
+        return ("ready_with_warnings", ["fixture_warning"]) if warning else ("ready", [])
+
+    monkeypatch.setattr(workspace, "_run_provider", convert)
+    return observed
+
+
+def test_workspace_create_is_complete_and_read_only_status_validate(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    created = workspace.prepare(root)
+    assert created["data"] == {
+        "action": "created", "state": "ready", "workspace_id": created["data"]["workspace_id"],
+        "generation": 1, "source_items": 0,
+    }
+    assert set(path.name for path in root.iterdir()) == {
+        "AGENTS.md", "CLAUDE.md", "collaborative-workspace.json", "ref", "agent-workbench",
+    }
+    assert (root / "CLAUDE.md").read_bytes() == b"@AGENTS.md\n"
+    assert set(path.name for path in (root / "agent-workbench").iterdir()) == {
+        "AGENTS.md", "CLAUDE.md", "ref", "temp", "output",
+    }
+    before = _tree(root)
+    assert workspace.status(root)["data"]["state"] == "ready"
+    assert workspace.validate(root)["data"]["valid"] is True
+    assert _tree(root) == before
+
+
+def test_workspace_adopts_ref_projects_full_basename_and_preserves_extras(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref" / "nested").mkdir(parents=True)
+    source = root / "ref" / "nested" / "report.txt"
+    source.write_bytes(b"source")
+    extra = root / "human-extra"
+    extra.write_bytes(b"keep")
+    before_ref = _tree(root / "ref")
+    snapshots = _fake_providers(monkeypatch)
+    adopted = workspace.prepare(root)
+    assert adopted["data"]["action"] == "adopted"
+    assert _tree(root / "ref") == before_ref and extra.read_bytes() == b"keep"
+    unit = root / "agent-workbench" / "ref" / "nested" / "report.txt"
+    assert (unit / "report.txt.md").is_file()
+    assert (unit / "report.txt.json").is_file()
+    assert (unit / "src" / "report.txt").read_bytes() == b"source"
+    assert snapshots and all(not str(path).startswith(str(root / "ref")) for path in snapshots)
+    manifest = _json(root / "agent-workbench" / "ref" / ".agent-workbench.json")
+    assert manifest["source_records"] == [{
+        "path": "nested/report.txt", "kind": "file", "digest": hashlib.sha256(b"source").hexdigest(),
+    }]
+    assert manifest["items"][0]["provider_route"] == "markdown-conversion"
+
+
+def test_workspace_exact_noop_then_refresh_preserves_output_and_only_replaces_prepared_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    source = root / "ref" / "memo.txt"
+    source.write_bytes(b"one")
+    _fake_providers(monkeypatch)
+    assert workspace.prepare(root)["data"]["action"] == "adopted"
+    before = _tree(root)
+    assert workspace.prepare(root)["data"]["action"] == "no_op"
+    assert _tree(root) == before
+    deliverable = root / "agent-workbench" / "output" / "answer.md"
+    deliverable.write_bytes(b"answer")
+    source.write_bytes(b"two")
+    refreshed = workspace.prepare(root)
+    assert refreshed["data"]["action"] == "refreshed"
+    assert refreshed["data"]["generation"] == 2
+    assert deliverable.read_bytes() == b"answer"
+    unit = root / "agent-workbench" / "ref" / "memo.txt"
+    assert (unit / "src" / "memo.txt").read_bytes() == b"two"
+
+
+def test_workspace_nonempty_temp_is_busy_and_zero_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    source = root / "ref" / "memo.txt"
+    source.write_bytes(b"one")
+    _fake_providers(monkeypatch)
+    workspace.prepare(root)
+    source.write_bytes(b"two")
+    temp = root / "agent-workbench" / "temp" / "in-progress"
+    temp.write_bytes(b"work")
+    before = _tree(root)
+    assert workspace.status(root)["data"]["state"] == "busy"
+    with pytest.raises(workspace.WorkspaceError, match="workbench_temp_not_empty") as validation:
+        workspace.validate(root)
+    assert validation.value.status == "busy"
+    with pytest.raises(workspace.WorkspaceError, match="workbench_temp_not_empty") as captured:
+        workspace.prepare(root)
+    assert captured.value.status == "busy" and _tree(root) == before
+
+
+def test_workspace_source_drift_before_adoption_publication_leaves_only_user_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    source = root / "ref" / "memo.txt"
+    source.write_bytes(b"one")
+    _fake_providers(monkeypatch)
+    original_scan = workspace._scan_source
+    calls = 0
+
+    def scan_with_drift(reference: Path | None, core: CoreRunner):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            source.write_bytes(b"two")
+        return original_scan(reference, core)
+
+    monkeypatch.setattr(workspace, "_scan_source", scan_with_drift)
+    with pytest.raises(workspace.WorkspaceError, match="source_changed_during_prepare"):
+        workspace.prepare(root)
+    assert set(path.name for path in root.iterdir()) == {"ref"}
+    assert source.read_bytes() == b"two"
+    assert not any(path.name.startswith(".cortex-collaborative-workspace-") for path in root.parent.iterdir())
+
+
+def test_workspace_final_temp_check_blocks_refresh_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    source = root / "ref" / "memo.txt"
+    source.write_bytes(b"one")
+    _fake_providers(monkeypatch)
+    workspace.prepare(root)
+    source.write_bytes(b"two")
+    prepared_ref = root / "agent-workbench" / "ref"
+    before_ref = _tree(prepared_ref)
+    original_build = workspace._build_candidate
+
+    def build_with_temp_race(candidate_root: Path, workspace_id: str, generation: int,
+                             items: list[workspace.SourceItem], core: CoreRunner):
+        built = original_build(candidate_root, workspace_id, generation, items, core)
+        (root / "agent-workbench" / "temp" / "raced.tmp").write_bytes(b"work")
+        return built
+
+    monkeypatch.setattr(workspace, "_build_candidate", build_with_temp_race)
+    with pytest.raises(workspace.WorkspaceError, match="workbench_temp_not_empty") as captured:
+        workspace.prepare(root)
+    assert captured.value.status == "busy"
+    assert _tree(prepared_ref) == before_ref
+    assert _json(prepared_ref / ".agent-workbench.json")["generation"] == 1
+    assert (root / "agent-workbench" / "temp" / "raced.tmp").read_bytes() == b"work"
+    assert not any(path.name.startswith(".cortex-collaborative-workspace-") for path in root.parent.iterdir())
+
+
+def test_workspace_aggregates_unsupported_and_instruction_control_without_publication(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    (root / "ref" / "one.bin").write_bytes(b"1")
+    (root / "ref" / "two.exe").write_bytes(b"2")
+    (root / "ref" / "CLAUDE.local.md").write_bytes(b"instructions")
+    with pytest.raises(workspace.WorkspaceError) as captured:
+        workspace.prepare(root)
+    codes = [item["code"] for item in captured.value.issues]
+    assert codes.count("unsupported_source_type") == 2
+    assert "instruction_control_source" in codes
+    assert not (root / "collaborative-workspace.json").exists()
+    assert set(path.name for path in root.iterdir()) == {"ref"}
+
+
+def test_workspace_refresh_aggregates_core_source_and_route_blockers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    (root / "ref" / "valid.txt").write_bytes(b"valid")
+    _fake_providers(monkeypatch)
+    workspace.prepare(root)
+    (root / "ref" / "unsupported.bin").write_bytes(b"unsupported")
+    (root / "ref" / "CLAUDE.local.md").write_bytes(b"instructions")
+    with pytest.raises(workspace.WorkspaceError) as captured:
+        workspace.prepare(root)
+    codes = {item["code"] for item in captured.value.issues}
+    assert "unsupported_source_type" in codes
+    assert "instruction_control_source" in codes or "instruction_control_path" in codes
+
+
+def test_workspace_copies_existing_knowledge_unit_byte_for_byte(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    unit = root / "ref" / "manual"
+    unit.mkdir(parents=True)
+    (unit / "manual.md").write_bytes(b"manual")
+    CoreRunner().knowledge_unit_stage_complete(unit)
+    before = _tree(unit)
+    _fake_providers(monkeypatch)
+    workspace.prepare(root)
+    projected = root / "agent-workbench" / "ref" / "manual"
+    assert _tree(projected) == before
+    manifest = _json(root / "agent-workbench" / "ref" / ".agent-workbench.json")
+    assert manifest["items"][0]["provider_route"] == "knowledge-unit-copy"
+    assert manifest["items"][0]["source_digest"] == manifest["items"][0]["prepared_digest"]
+
+
+def test_workspace_warning_quality_is_published_and_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    (root / "ref" / "warning.txt").write_bytes(b"warning")
+    _fake_providers(monkeypatch, warning=True)
+    prepared = workspace.prepare(root)
+    assert prepared["data"]["state"] == "ready_with_warnings"
+    assert prepared["data"]["warnings"] == ["fixture_warning"]
+    assert workspace.validate(root)["data"]["state"] == "ready_with_warnings"
+
+
+def test_workspace_tamper_is_invalid_and_never_readopted(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    workspace.prepare(root)
+    manifest = root / "collaborative-workspace.json"
+    manifest.write_bytes(b"{}\n")
+    assert workspace.status(root)["data"]["state"] == "invalid"
+    with pytest.raises(workspace.WorkspaceError, match="workspace_invalid"):
+        workspace.prepare(root)
+    assert manifest.read_bytes() == b"{}\n"
+
+
+@pytest.mark.parametrize("mutation", ["mismatch", "missing", "unsupported"])
+def test_workspace_manifest_provider_route_tamper_is_invalid_and_cannot_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    (root / "ref" / "memo.txt").write_bytes(b"source")
+    _fake_providers(monkeypatch)
+    workspace.prepare(root)
+    manifest_path = root / "agent-workbench" / "ref" / ".agent-workbench.json"
+    manifest = _json(manifest_path)
+    item = manifest["items"][0]
+    if mutation == "mismatch":
+        item["provider_route"] = "file-conversion"
+    elif mutation == "missing":
+        del item["provider_route"]
+    else:
+        item["provider_route"] = "dynamic-provider"
+    manifest_path.write_bytes(
+        (json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    )
+    before = _tree(root)
+    status = workspace.status(root)
+    assert status["data"]["state"] == "invalid" and status["data"]["recognized"] is True
+    if mutation == "mismatch":
+        assert any(item["code"] == "provider_route_mismatch" for item in status["data"]["blockers"])
+    with pytest.raises(workspace.WorkspaceError, match="workspace_invalid"):
+        workspace.validate(root)
+    with pytest.raises(workspace.WorkspaceError, match="workspace_invalid"):
+        workspace.prepare(root)
+    assert _tree(root) == before
+
+
+def test_workspace_cli_surface_is_closed_and_requires_absolute_root(capsys: pytest.CaptureFixture[str]) -> None:
+    from cortex_collaborative_workspace.cli import main
+
+    assert main(["--json", "prepare", "--root", "relative"]) == 2
+    value = json.loads(capsys.readouterr().out)
+    assert value["command"] == "collaborative_workspace.prepare"
+    assert value["issues"] == [{"code": "absolute_root_required"}]
+    assert main(["--json", "delete", "--root", "C:\\workspace"]) == 2
+    value = json.loads(capsys.readouterr().out)
+    assert value["issues"] == [{"code": "invalid_arguments"}]
+
+
+def test_workspace_provider_binding_uses_exact_snapshot_cli_and_candidate_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = tmp_path / "provider.py"
+    provider.write_text(
+        """from __future__ import annotations
+import argparse, json, os, pathlib, shutil, subprocess, sys
+p=argparse.ArgumentParser(); p.add_argument('--config', required=True); p.add_argument('--input', required=True); p.add_argument('--output-dir', required=True); p.add_argument('--bundle-name-mode', required=True); a=p.parse_args()
+assert pathlib.Path(a.config).read_text() == 'config' and a.bundle_name_mode == 'source-basename'
+source=pathlib.Path(a.input); unit=pathlib.Path(a.output_dir)/source.name; unit.mkdir()
+(unit/(source.name+'.md')).write_text('# converted\\n', encoding='utf-8')
+(unit/(source.name+'.json')).write_text(json.dumps({'quality':{'status':'complete','warnings':[]}}), encoding='utf-8')
+(unit/'src').mkdir(); shutil.copyfile(source, unit/'src'/source.name); (unit/'assets').mkdir()
+wire=(json.dumps({'command':'stage.complete','request':{'path':str(unit.resolve()),'private_root_files':[]}},separators=(',',':'))+'\\n').encode()
+done=subprocess.run([sys.executable,'-I',os.environ['ANTI_ENTROPY_CORE_RUNNER']],input=wire,stdout=subprocess.PIPE,check=False)
+raise SystemExit(done.returncode)
+""",
+        encoding="utf-8",
+    )
+    config = tmp_path / "config.json"
+    config.write_text("config", encoding="utf-8")
+    monkeypatch.setenv("MARKDOWN_CONVERSION_RUNNER", str(provider.resolve()))
+    monkeypatch.setenv("MARKDOWN_CONVERSION_CONFIG", str(config.resolve()))
+    snapshot = tmp_path / "snapshots" / "report.txt"
+    snapshot.parent.mkdir()
+    snapshot.write_bytes(b"source")
+    output = tmp_path / "candidate"
+    output.mkdir()
+    quality, warnings = workspace._run_provider(
+        "markdown-conversion", snapshot, output, output / "report.txt",
+    )
+    assert (quality, warnings) == ("ready", [])
+    assert (output / "report.txt" / "report.txt.md").is_file()
+    assert CoreRunner().knowledge_unit_validate(output / "report.txt")["status"] == "ok"
+
+
+def test_workspace_adoption_failure_cleans_only_unchanged_owned_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    extra = root / "existing.txt"
+    extra.write_bytes(b"keep")
+    original = workspace._copy_file
+
+    def fail_manifest(
+        source: Path, destination: Path, expected_digest: str | None = None,
+    ) -> workspace.Installed:
+        if destination.name == "collaborative-workspace.json":
+            raise workspace.WorkspaceError("io_error", "injected_manifest_failure")
+        return original(source, destination, expected_digest)
+
+    monkeypatch.setattr(workspace, "_copy_file", fail_manifest)
+    with pytest.raises(workspace.WorkspaceError, match="injected_manifest_failure") as captured:
+        workspace.prepare(root)
+    assert captured.value.data.get("residue", []) == []
+    assert {path.name for path in root.iterdir()} == {"existing.txt"}
+    assert extra.read_bytes() == b"keep"
+
+
+def test_copy_file_exclusive_collision_preserves_preexisting_target(tmp_path: Path) -> None:
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"source")
+    destination = tmp_path / "destination.txt"
+    destination.write_bytes(b"preexisting")
+    with pytest.raises(workspace.WorkspaceError, match="source_snapshot_failed"):
+        workspace._copy_file(source, destination)
+    assert destination.read_bytes() == b"preexisting"
+
+
+@pytest.mark.parametrize("replace_destination", [False, True])
+def test_workspace_adoption_post_copy_source_drift_uses_creation_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replace_destination: bool,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    original_identity = workspace._identity
+    source_checks = 0
+
+    def drift_after_copy(
+        path: Path, *, directory: bool | None = None, missing: bool = False,
+    ) -> workspace.Identity | None:
+        nonlocal source_checks
+        observed = original_identity(path, directory=directory, missing=missing)
+        if path.name == "AGENTS.md" and "candidate" in path.parts and directory is False:
+            source_checks += 1
+            if source_checks == 2:
+                assert observed is not None
+                if replace_destination:
+                    destination = root / "AGENTS.md"
+                    destination.unlink()
+                    destination.write_bytes(b"user replacement")
+                return workspace.Identity(observed.device, observed.inode + 1, observed.mode)
+        return observed
+
+    monkeypatch.setattr(workspace, "_identity", drift_after_copy)
+    with pytest.raises(workspace.WorkspaceError, match="source_changed_during_snapshot") as captured:
+        workspace.prepare(root)
+    if replace_destination:
+        assert captured.value.data["residue"] == [str(root / "AGENTS.md")]
+        assert {path.name for path in root.iterdir()} == {"AGENTS.md"}
+        assert (root / "AGENTS.md").read_bytes() == b"user replacement"
+    else:
+        assert "residue" not in captured.value.data
+        assert list(root.iterdir()) == []
+    assert not any(path.name.startswith(".cortex-collaborative-workspace-") for path in root.parent.iterdir())
+
+
+def test_workspace_adoption_copy_collision_preserves_raced_target_and_cleans_owned_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    original = workspace._copy_file
+
+    def collide_on_second_guide(
+        source: Path, destination: Path, expected_digest: str | None = None,
+    ) -> workspace.Installed:
+        if destination == root / "CLAUDE.md":
+            destination.write_bytes(b"raced")
+        return original(source, destination, expected_digest)
+
+    monkeypatch.setattr(workspace, "_copy_file", collide_on_second_guide)
+    with pytest.raises(workspace.WorkspaceError, match="source_snapshot_failed"):
+        workspace.prepare(root)
+    assert {path.name for path in root.iterdir()} == {"CLAUDE.md"}
+    assert (root / "CLAUDE.md").read_bytes() == b"raced"
+    assert not any(path.name.startswith(".cortex-collaborative-workspace-") for path in root.parent.iterdir())
+
+
+def test_workspace_adoption_cleanup_preserves_replacement_after_exclusive_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    original = workspace._copy_file
+
+    def replace_first_then_fail(
+        source: Path, destination: Path, expected_digest: str | None = None,
+    ) -> workspace.Installed:
+        if destination == root / "CLAUDE.md":
+            raise workspace.WorkspaceError("io_error", "injected_later_artifact_failure")
+        copied = original(source, destination, expected_digest)
+        if destination == root / "AGENTS.md":
+            destination.unlink()
+            destination.write_bytes(b"user replacement")
+        return copied
+
+    monkeypatch.setattr(workspace, "_copy_file", replace_first_then_fail)
+    with pytest.raises(workspace.WorkspaceError, match="injected_later_artifact_failure") as captured:
+        workspace.prepare(root)
+    assert captured.value.data["residue"] == [str(root / "AGENTS.md")]
+    assert {path.name for path in root.iterdir()} == {"AGENTS.md"}
+    assert (root / "AGENTS.md").read_bytes() == b"user replacement"
+    assert not any(path.name.startswith(".cortex-collaborative-workspace-") for path in root.parent.iterdir())
+
+
+def test_workspace_adoption_cleanup_preserves_replaced_renamed_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    original_copy = workspace._copy_file
+    original_rename = workspace.os.rename
+
+    def replace_after_rename(source: Path, destination: Path) -> None:
+        original_rename(source, destination)
+        destination = Path(destination)
+        if destination in {root / "ref", root / "agent-workbench"}:
+            workspace._delete_no_follow(destination)
+            destination.mkdir()
+            (destination / "user-owned.txt").write_bytes(destination.name.encode("utf-8"))
+
+    def fail_manifest(
+        source: Path, destination: Path, expected_digest: str | None = None,
+    ) -> workspace.Installed:
+        if destination == root / "collaborative-workspace.json":
+            raise workspace.WorkspaceError("io_error", "injected_manifest_failure")
+        return original_copy(source, destination, expected_digest)
+
+    monkeypatch.setattr(workspace.os, "rename", replace_after_rename)
+    monkeypatch.setattr(workspace, "_copy_file", fail_manifest)
+    with pytest.raises(workspace.WorkspaceError, match="injected_manifest_failure") as captured:
+        workspace.prepare(root)
+    assert captured.value.data["residue"] == [
+        str(root / "agent-workbench"), str(root / "ref"),
+    ]
+    assert {path.name for path in root.iterdir()} == {"ref", "agent-workbench"}
+    assert (root / "ref" / "user-owned.txt").read_bytes() == b"ref"
+    assert (root / "agent-workbench" / "user-owned.txt").read_bytes() == b"agent-workbench"
+    assert not any(path.name.startswith(".cortex-collaborative-workspace-") for path in root.parent.iterdir())
+
+
+def test_workspace_adoption_rejects_unsafe_nested_extra_before_any_write(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    unsafe = root / "extra" / ".claude"
+    unsafe.mkdir(parents=True)
+    (unsafe / "settings.json").write_bytes(b"{}")
+    before = _tree(root)
+    with pytest.raises(workspace.WorkspaceError) as captured:
+        workspace.prepare(root)
+    assert any(item["code"] == "instruction_control_extra" for item in captured.value.issues)
+    assert _tree(root) == before
+
+
+def test_workspace_refresh_rename_failure_restores_old_prepared_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    source = root / "ref" / "memo.txt"
+    source.write_bytes(b"one")
+    _fake_providers(monkeypatch)
+    workspace.prepare(root)
+    prepared = root / "agent-workbench" / "ref"
+    old_tree = _tree(prepared)
+    source.write_bytes(b"two")
+    original = workspace.os.rename
+
+    def fail_candidate(source_path: str | os.PathLike[str], destination_path: str | os.PathLike[str]) -> None:
+        source_value, destination_value = Path(source_path), Path(destination_path)
+        if source_value.name == "ref" and "candidate" in source_value.parts and destination_value == prepared:
+            raise OSError("injected")
+        original(source_path, destination_path)
+
+    monkeypatch.setattr(workspace.os, "rename", fail_candidate)
+    with pytest.raises(workspace.WorkspaceError, match="refresh_publish_failed") as captured:
+        workspace.prepare(root)
+    assert captured.value.data == {"published": False}
+    assert _tree(prepared) == old_tree
+    assert not any(path.name.startswith(".ref-old-") for path in prepared.parent.iterdir())
+
+
+def test_workspace_refresh_preserves_backup_when_cleanup_identity_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    source = root / "ref" / "memo.txt"
+    source.write_bytes(b"one")
+    _fake_providers(monkeypatch)
+    workspace.prepare(root)
+    source.write_bytes(b"two")
+    original = workspace._same_identity
+
+    def changed(path: Path, expected: workspace.Identity) -> bool:
+        if path.name.startswith(".ref-old-"):
+            return False
+        return original(path, expected)
+
+    monkeypatch.setattr(workspace, "_same_identity", changed)
+    with pytest.raises(workspace.WorkspaceError, match="refresh_cleanup_identity_changed") as captured:
+        workspace.prepare(root)
+    assert captured.value.data["published"] is True
+    residue = Path(captured.value.data["residue"][0])
+    assert residue.is_dir()
+    assert (root / "agent-workbench" / "ref" / "memo.txt" / "src" / "memo.txt").read_bytes() == b"two"
+
+
+def test_workspace_nonwaiting_lock_reports_busy_without_workspace_mutation(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    workspace.prepare(root)
+    before = _tree(root)
+    with workspace._writer_lock(root):
+        with pytest.raises(workspace.WorkspaceError, match="workspace_busy") as captured:
+            workspace.status(root)
+    assert captured.value.status == "busy" and _tree(root) == before
+
+
+def test_workspace_status_and_validate_create_no_workspace_or_lock_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "missing-workspace"
+    lock_root = tmp_path / "lock-root"
+    lock_root.mkdir()
+    monkeypatch.setattr(workspace.tempfile, "gettempdir", lambda: str(lock_root))
+    assert workspace.status(root)["data"] == {"state": "uninitialized", "recognized": False}
+    with pytest.raises(workspace.WorkspaceError, match="workspace_uninitialized"):
+        workspace.validate(root)
+    assert not root.exists() and list(lock_root.iterdir()) == []
+
+
+def test_workspace_stage_is_created_as_a_same_volume_sibling(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    stage = workspace._new_stage(root)
+    try:
+        parent_identity = workspace._identity(root.parent, directory=True)
+        assert parent_identity is not None
+        assert stage.root.parent == root.parent
+        assert stage.identity.device == parent_identity.device
+    finally:
+        assert workspace._cleanup_stage(stage) == []
+    assert not stage.root.exists()
+
+
+def test_workspace_cleanup_does_not_follow_directory_symlink(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "keep.txt"
+    sentinel.write_bytes(b"keep")
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    link = owned / "external"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"host cannot create directory symlinks: {exc}")
+    workspace._delete_no_follow(owned)
+    assert not owned.exists()
+    assert sentinel.read_bytes() == b"keep"

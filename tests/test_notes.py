@@ -19,7 +19,7 @@ ROLE_SKILLS = (
     "cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage",
     "cortex-notes-ingest", "cortex-notes-build", "cortex-notes-manage",
 )
-ALL_SKILLS = ("cortex", *ROLE_SKILLS)
+ALL_SKILLS = ("cortex", *ROLE_SKILLS, "cortex-collaborative-workspace")
 
 
 def _write_json(path: Path, value: object) -> Path:

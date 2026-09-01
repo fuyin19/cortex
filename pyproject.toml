@@ -18,4 +18,4 @@ where = ["src"]
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
-pythonpath = ["src", "notes_runtime/src"]
+pythonpath = ["src", "notes_runtime/src", "collaborative_workspace_runtime/src"]

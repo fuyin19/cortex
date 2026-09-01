@@ -17,6 +17,7 @@
     "router": "cortex",
     "canonical": ["cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage"],
     "canonical_roles": ["cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage", "cortex-notes-ingest", "cortex-notes-build", "cortex-notes-manage"],
+    "domain_skills": ["cortex-collaborative-workspace"],
     "write_owners": {
       "align.apply": "cortex-kb-manage",
       "manage.init": "cortex-kb-build",
@@ -35,7 +36,8 @@
       "cortex-kb-manage": "explicit-only",
       "cortex-notes-ingest": "explicit-only",
       "cortex-notes-build": "explicit-only",
-      "cortex-notes-manage": "explicit-only"
+      "cortex-notes-manage": "explicit-only",
+      "cortex-collaborative-workspace": "explicit-only"
     },
     "router_runtime": false,
     "enforcement": "skill-contract-only"

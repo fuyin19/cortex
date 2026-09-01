@@ -15,7 +15,7 @@ export ANTI_ENTROPY_CORE_RUNNER=/absolute/path/to/knowledge_unit_runner.py
 
 `CORTEX_PYTHON` is mandatory and must name the same ordinary, non-reparse Python 3.11/UCD 14 executable that runs the skill-local launcher. `ANTI_ENTROPY_CORE_RUNNER` is also mandatory for every non-init Cortex command and must be an explicit absolute path; Cortex launches it as `[sys.executable, "-I", runner]` with one JSONL request and has no local or implicit-discovery fallback. Windows may invoke the byte-identical `scripts\run_cortex.cmd` convenience launcher after setting the same variables. There is no PATH, install, network, or alternate-runtime fallback. Human stdout/stderr is UTF-8; `--json` retains the existing compact ASCII-escaped Result encoding.
 
-The explicit-only skill taxonomy separates responsibilities without changing the KB CLI. The instruction-only `cortex` router selects exactly one of six canonical roles and packages no runtime:
+The explicit-only skill taxonomy separates responsibilities without changing the KB CLI. The instruction-only `cortex` router selects exactly one canonical skill and packages no runtime:
 
 - `cortex-kb-ingest` owns `record.add` and the sequential batch wrapper, preserving exact v1 syntax and adding exact v2 source/conversion/both syntax.
 - `cortex-kb-build` owns `manage.init`, `manage.config.set`, and `registry.set` only. It requires one explicit active build session and keyed-monotonic profile/Registry expansion.
@@ -26,6 +26,28 @@ The explicit-only skill taxonomy separates responsibilities without changing the
 Every canonical KB skill embeds the same Cortex 8 wheel and requires the same
 explicit external Core runner for non-init work; ownership is enforced by the
 skill contract, not by removing CLI routes.
+
+### Collaborative Workspace 1.0
+
+`cortex-collaborative-workspace` is one independent explicit-only skill with its own deterministic offline wheel. It prepares the fixed outer Collaborative Workspace and nested Agent Workbench contracts without importing Record KB or Notes:
+
+```text
+<Collaborative Workspace>/
+├── AGENTS.md
+├── CLAUDE.md
+├── collaborative-workspace.json
+├── ref/
+└── agent-workbench/
+    ├── AGENTS.md
+    ├── CLAUDE.md
+    ├── ref/.agent-workbench.json
+    ├── temp/
+    └── output/
+```
+
+Invoke `scripts/run_collaborative_workspace.py --json prepare|status|validate --root <absolute-root>` through the exact `CORTEX_PYTHON` binding. `ANTI_ENTROPY_CORE_RUNNER` is mandatory. Prepare additionally requires explicit absolute `FILE_CONVERSION_RUNNER`/`FILE_CONVERSION_CONFIG` and/or `MARKDOWN_CONVERSION_RUNNER`/`MARKDOWN_CONVERSION_CONFIG` when those source routes are present. There is no provider lookup or fallback.
+
+Outer `ref/` is human-owned and never mutated. Prepare creates, safely adopts, returns an exact no-op, or replaces only stale `agent-workbench/ref/`; nonempty `temp/` returns busy, while `output/` and safe extras are preserved. The runtime does not expose delete, clean, rebuild, watch, queue, recovery, automatic KB/Notes ingest, or output promotion. See `docs/collaborative-workspace-architecture.md`.
 
 Only `cortex-kb-ingest` carries `scripts/batch_record_add.py`. The helper is a sequential wrapper around the same verified `record add` route. It preserves exact v1 syntax and adds exact v2 source-only, conversion-only, and both forms through `--job <path|->` (stdin is preferred). It validates every item's syntax before the first runner call, continues after valid non-ok Results, creates no persistent job state, and is not a core/public route.
 

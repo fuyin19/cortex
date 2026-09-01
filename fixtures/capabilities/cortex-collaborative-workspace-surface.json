@@ -1,0 +1,30 @@
+{
+  "version": "1.0.0",
+  "distribution": "cortex-collaborative-workspace",
+  "import": "cortex_collaborative_workspace",
+  "runner": "run_collaborative_workspace.py",
+  "routes": [
+    "collaborative_workspace.prepare",
+    "collaborative_workspace.status",
+    "collaborative_workspace.validate"
+  ],
+  "contracts": [
+    "collaborative-workspace-envelope/v1",
+    "agent-workbench-envelope/v1"
+  ],
+  "skill": "cortex-collaborative-workspace",
+  "invocation_policy": "explicit-only",
+  "provider_routes": [
+    "knowledge-unit-copy",
+    "file-conversion",
+    "markdown-conversion"
+  ],
+  "required_environment": [
+    "CORTEX_PYTHON",
+    "ANTI_ENTROPY_CORE_RUNNER"
+  ],
+  "conditional_provider_environment": {
+    "file-conversion": ["FILE_CONVERSION_RUNNER", "FILE_CONVERSION_CONFIG"],
+    "markdown-conversion": ["MARKDOWN_CONVERSION_RUNNER", "MARKDOWN_CONVERSION_CONFIG"]
+  }
+}
