@@ -20,7 +20,7 @@ DISTRIBUTION = "cortex-collaborative-workspace"
 IMPORT_NAME = "cortex_collaborative_workspace"
 WHEEL_NAME = "cortex_collaborative_workspace-1.1.0-py3-none-any.whl"
 DIST_INFO = "cortex_collaborative_workspace-1.1.0.dist-info"
-SKILL = "cortex-collaborative-workspace"
+ADAPTER = Path("skills/cortex/scripts/collaborative-workspace")
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 SOURCE_FILES = {"__init__.py", "__main__.py", "cli.py", "core_runner.py", "workspace.py"}
 
@@ -176,16 +176,16 @@ def _payload(root: Path) -> dict[str, bytes]:
         "wheel": WHEEL_NAME, "wheel_sha256": digest, "python": "3.11", "isolation": "-I",
     }
     return {
-        "scripts/run_collaborative_workspace.py": _runner(digest),
-        "scripts/run_collaborative_workspace.cmd": (
+        "run_collaborative_workspace.py": _runner(digest),
+        "run_collaborative_workspace.cmd": (
             "@echo off\r\nif not defined CORTEX_PYTHON (\r\n"
             "  >&2 echo cortex collaborative workspace runtime error: cortex_python_required\r\n"
             "  exit /b 70\r\n)\r\n"
             '"%CORTEX_PYTHON%" -I "%~dp0run_collaborative_workspace.py" %*\r\n'
             "exit /b %ERRORLEVEL%\r\n"
         ).encode("ascii"),
-        "scripts/runtime-manifest.json": (_canonical_manifest(manifest) + "\n").encode("utf-8"),
-        f"scripts/vendor/{WHEEL_NAME}": wheel,
+        "runtime-manifest.json": (_canonical_manifest(manifest) + "\n").encode("utf-8"),
+        f"vendor/{WHEEL_NAME}": wheel,
     }
 
 
@@ -198,13 +198,12 @@ def _is_reparse(info: os.stat_result) -> bool:
 
 
 def _prepare(root: Path, expected: dict[str, bytes]) -> Path:
-    target = root / "skills" / SKILL
+    target = root / ADAPTER
     info = target.lstat()
     if stat.S_ISLNK(info.st_mode) or _is_reparse(info) or not stat.S_ISDIR(info.st_mode):
         raise RuntimeError("unsafe Collaborative Workspace skill directory")
-    scripts = target / "scripts"
+    scripts = target
     vendor = scripts / "vendor"
-    scripts.mkdir(exist_ok=True)
     vendor.mkdir(exist_ok=True)
     allowed = set(expected)
     for path in scripts.rglob("*"):
@@ -214,7 +213,7 @@ def _prepare(root: Path, expected: dict[str, bytes]) -> Path:
             raise RuntimeError("linked runtime artifact")
         if stat.S_ISREG(info.st_mode) and relative not in allowed:
             raise RuntimeError("unexpected runtime artifact")
-        if stat.S_ISDIR(info.st_mode) and relative not in {"scripts/vendor"}:
+        if stat.S_ISDIR(info.st_mode) and relative not in {"vendor"}:
             raise RuntimeError("unexpected runtime directory")
     return target
 
@@ -224,8 +223,7 @@ def _check_router(root: Path) -> None:
     info = target.lstat()
     if stat.S_ISLNK(info.st_mode) or _is_reparse(info) or not stat.S_ISDIR(info.st_mode):
         raise RuntimeError("unsafe Cortex router")
-    if (target / "scripts").exists():
-        raise RuntimeError("Cortex router must not package a runtime")
+    if not (target / "scripts" / "collaborative-workspace").is_dir(): raise RuntimeError("Collaborative Workspace adapter missing")
 
 
 def main() -> int:
@@ -244,7 +242,7 @@ def main() -> int:
     actual = {relative: (target / relative).read_bytes() for relative in expected}
     if actual != expected:
         raise RuntimeError("Collaborative Workspace skill runtime drift")
-    print(f"{WHEEL_NAME} sha256={_sha256(expected[f'scripts/vendor/{WHEEL_NAME}'])}")
+    print(f"{WHEEL_NAME} sha256={_sha256(expected[f'vendor/{WHEEL_NAME}'])}")
     return 0
 
 

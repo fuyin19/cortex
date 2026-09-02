@@ -19,7 +19,7 @@ ROLE_SKILLS = (
     "cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage",
     "cortex-notes-ingest", "cortex-notes-build", "cortex-notes-manage",
 )
-ALL_SKILLS = ("cortex", *ROLE_SKILLS, "cortex-collaborative-workspace")
+ALL_SKILLS = ("cortex",)
 
 
 def _write_json(path: Path, value: object) -> Path:
@@ -320,15 +320,12 @@ def test_notes_cli_routes_root_requirement_and_removed_partition_add(tmp_path: P
 
 def test_notes_runtime_packaging_router_and_explicit_only_metadata(tmp_path: Path) -> None:
     assert sorted(path.name for path in (ROOT / "skills").iterdir() if path.is_dir() and any(path.iterdir())) == sorted(ALL_SKILLS)
-    payloads = []
-    for name in NOTES_SKILLS:
-        skill = ROOT / "skills" / name
-        payloads.append({relative: (skill / relative).read_bytes() for relative in (
-            "scripts/run_notes.py", "scripts/run_notes.cmd", "scripts/runtime-manifest.json",
-            "scripts/vendor/cortex_notes-2.1.0-py3-none-any.whl",
-        )})
-    assert payloads[0] == payloads[1] == payloads[2]
-    assert not (ROOT / "skills/cortex/scripts").exists()
+    adapter = ROOT / "skills/cortex/scripts/notes"
+    assert all((adapter / relative).is_file() for relative in (
+        "run_notes.py", "run_notes.cmd", "runtime-manifest.json",
+        "vendor/cortex_notes-2.1.0-py3-none-any.whl",
+    ))
+    assert not (adapter / "SKILL.md").exists()
     for name in ALL_SKILLS:
         skill = ROOT / "skills" / name
         metadata = (skill / "agents/openai.yaml").read_text("utf-8")
@@ -339,13 +336,13 @@ def test_notes_runtime_packaging_router_and_explicit_only_metadata(tmp_path: Pat
     checked = subprocess.run([sys.executable, str(ROOT / "tools/package_notes_runtime.py"), "--check"], cwd=ROOT,
                              env=env, capture_output=True, text=True, check=False)
     assert checked.returncode == 0 and checked.stderr == "" and "sha256=" in checked.stdout
-    runner = ROOT / "skills/cortex-notes-manage/scripts/run_notes.py"
+    runner = ROOT / "skills/cortex/scripts/notes/run_notes.py"
     version = subprocess.run([sys.executable, "-I", str(runner), "--version"], cwd=runner.parent, env=env,
                              capture_output=True, text=True, check=False)
     assert version.returncode == 0 and version.stdout == "cortex-notes 2.1.0\n"
-    copied = tmp_path / "skill"; shutil.copytree(ROOT / "skills/cortex-notes-manage", copied)
-    wheel = copied / "scripts/vendor/cortex_notes-2.1.0-py3-none-any.whl"; wheel.write_bytes(wheel.read_bytes() + b"tamper")
-    failed = subprocess.run([sys.executable, "-I", str(copied / "scripts/run_notes.py"), "--version"], cwd=copied,
+    copied = tmp_path / "skill"; shutil.copytree(ROOT / "skills/cortex/scripts/notes", copied)
+    wheel = copied / "vendor/cortex_notes-2.1.0-py3-none-any.whl"; wheel.write_bytes(wheel.read_bytes() + b"tamper")
+    failed = subprocess.run([sys.executable, "-I", str(copied / "run_notes.py"), "--version"], cwd=copied,
                             env=env, capture_output=True, text=True, check=False)
     assert failed.returncode == 70 and "wheel_digest_mismatch" in failed.stderr
 
@@ -357,14 +354,14 @@ def test_notes_surface_is_closed_and_kb_runtime_sources_remain_separate() -> Non
     assert surface["profiles"] == ["note-schema.json", "tags.json", "layout.json"]
     assert surface["skill_taxonomy"]["router"] == "cortex"
     assert surface["skill_taxonomy"]["invocation_policy"] == "explicit-only"
-    assert surface["skill_taxonomy"]["read_owner"] == "cortex-notes-manage"
+    assert surface["skill_taxonomy"]["read_owner"] == "notes.manage"
     assert set(surface["skill_taxonomy"]["write_owners"].values()) == {
-        "cortex-notes-build", "cortex-notes-ingest", "cortex-notes-manage",
+        "notes.build", "notes.ingest", "notes.manage",
     }
     combined = "\n".join((ROOT / path).read_text("utf-8").casefold() for path in (
         "notes_runtime/src/cortex_notes/core.py", "notes_runtime/src/cortex_notes/cli.py",
-        "skills/cortex-notes-ingest/SKILL.md", "skills/cortex-notes-build/SKILL.md",
-        "skills/cortex-notes-manage/SKILL.md",
+        "skills/cortex/references/notes-ingest.md", "skills/cortex/references/notes-build.md",
+        "skills/cortex/references/notes-manage.md",
     ))
     for forbidden in ("import sqlite", "import requests", "import socket"):
         assert forbidden not in combined

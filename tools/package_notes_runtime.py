@@ -20,7 +20,7 @@ DISTRIBUTION = "cortex-notes"
 IMPORT_NAME = "cortex_notes"
 WHEEL_NAME = "cortex_notes-2.1.0-py3-none-any.whl"
 DIST_INFO = "cortex_notes-2.1.0.dist-info"
-SKILLS = ("cortex-notes-ingest", "cortex-notes-build", "cortex-notes-manage")
+ADAPTER = Path("skills/cortex/scripts/notes")
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
 
@@ -166,10 +166,10 @@ def _payload(root: Path) -> dict[str, bytes]:
     wheel = _wheel(root); digest = _sha256(wheel)
     manifest = {"schema_version":1,"distribution":DISTRIBUTION,"import":IMPORT_NAME,"version":VERSION,"wheel":WHEEL_NAME,"wheel_sha256":digest,"python":"3.11","isolation":"-I"}
     return {
-        "scripts/run_notes.py": _runner(digest),
-        "scripts/run_notes.cmd": ("@echo off\r\nif not defined CORTEX_PYTHON (\r\n  >&2 echo cortex notes skill runtime error: cortex_python_required\r\n  exit /b 70\r\n)\r\n\"%CORTEX_PYTHON%\" -I \"%~dp0run_notes.py\" %*\r\nexit /b %ERRORLEVEL%\r\n").encode("ascii"),
-        "scripts/runtime-manifest.json": (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode(),
-        f"scripts/vendor/{WHEEL_NAME}": wheel,
+        "run_notes.py": _runner(digest),
+        "run_notes.cmd": ("@echo off\r\nif not defined CORTEX_PYTHON (\r\n  >&2 echo cortex notes skill runtime error: cortex_python_required\r\n  exit /b 70\r\n)\r\n\"%CORTEX_PYTHON%\" -I \"%~dp0run_notes.py\" %*\r\nexit /b %ERRORLEVEL%\r\n").encode("ascii"),
+        "runtime-manifest.json": (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode(),
+        f"vendor/{WHEEL_NAME}": wheel,
     }
 
 
@@ -177,19 +177,19 @@ def _is_reparse(info: os.stat_result) -> bool:
     return bool(getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
 
 
-def _prepare(root: Path, skill: str, expected: dict[str, bytes]) -> Path:
-    target = root / "skills" / skill
+def _prepare(root: Path, expected: dict[str, bytes]) -> Path:
+    target = root / ADAPTER
     info = target.lstat()
     if stat.S_ISLNK(info.st_mode) or _is_reparse(info) or not stat.S_ISDIR(info.st_mode): raise RuntimeError("unsafe skill directory")
-    scripts = target / "scripts"; vendor = scripts / "vendor"
-    scripts.mkdir(exist_ok=True); vendor.mkdir(exist_ok=True)
+    scripts = target; vendor = scripts / "vendor"
+    vendor.mkdir(exist_ok=True)
     allowed = set(expected)
     for path in scripts.rglob("*"):
         relative = path.relative_to(target).as_posix(); info = path.lstat()
         if stat.S_ISLNK(info.st_mode) or _is_reparse(info): raise RuntimeError("linked runtime artifact")
-        generated_wheel = relative.startswith("scripts/vendor/cortex_notes-") and relative.endswith("-py3-none-any.whl")
+        generated_wheel = relative.startswith("vendor/cortex_notes-") and relative.endswith("-py3-none-any.whl")
         if stat.S_ISREG(info.st_mode) and relative not in allowed and not generated_wheel: raise RuntimeError("unexpected runtime artifact")
-        if stat.S_ISDIR(info.st_mode) and relative not in {"scripts/vendor"}: raise RuntimeError("unexpected runtime directory")
+        if stat.S_ISDIR(info.st_mode) and relative not in {"vendor"}: raise RuntimeError("unexpected runtime directory")
     return target
 
 
@@ -202,18 +202,17 @@ def _check_router(root: Path) -> None:
     info = skill.lstat()
     if stat.S_ISLNK(info.st_mode) or _is_reparse(info) or not stat.S_ISREG(info.st_mode):
         raise RuntimeError("Cortex router instructions missing")
-    if (target / "scripts").exists():
-        raise RuntimeError("Cortex router must not package a runtime")
+    if not (target / "scripts" / "notes").is_dir(): raise RuntimeError("Cortex Notes adapter missing")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(); parser.add_argument("--check", action="store_true"); args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]; expected = _payload(root)
     _check_router(root)
-    prepared = [_prepare(root, skill, expected) for skill in SKILLS]
+    prepared = [_prepare(root, expected)]
     if not args.check:
         for skill in prepared:
-            for stale in (skill / "scripts/vendor").glob("cortex_notes-*-py3-none-any.whl"):
+            for stale in (skill / "vendor").glob("cortex_notes-*-py3-none-any.whl"):
                 if stale.name != WHEEL_NAME: stale.unlink()
             for relative, raw in expected.items():
                 path = skill / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(raw)
@@ -223,7 +222,7 @@ def main() -> int:
         if actual != expected: raise RuntimeError("Notes skill runtime drift")
         observed.append(actual)
     if any(value != observed[0] for value in observed[1:]): raise RuntimeError("Notes runtimes differ")
-    print(f"{WHEEL_NAME} sha256={_sha256(expected[f'scripts/vendor/{WHEEL_NAME}'])}")
+    print(f"{WHEEL_NAME} sha256={_sha256(expected[f'vendor/{WHEEL_NAME}'])}")
     return 0
 
 

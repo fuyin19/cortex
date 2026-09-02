@@ -23,12 +23,7 @@ DISTRIBUTION = "cortex-record-kb"
 IMPORT_NAME = "cortex"
 WHEEL_NAME = "cortex_record_kb-8.1.0-py3-none-any.whl"
 DIST_INFO = "cortex_record_kb-8.1.0.dist-info"
-RUNTIME_SKILLS = (
-    "cortex-kb-ingest",
-    "cortex-kb-build",
-    "cortex-kb-manage",
-)
-BATCH_SKILLS = ("cortex-kb-ingest",)
+ADAPTER = Path("skills/cortex/scripts/kb")
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
 
@@ -300,7 +295,7 @@ def _windows_launcher_bytes() -> bytes:
 
 
 def _batch_helper_bytes() -> bytes:
-    source = Path(__file__).resolve().parents[1] / "skills" / "cortex-kb-ingest" / "scripts" / "batch_record_add.py"
+    source = Path(__file__).resolve().parents[1] / ADAPTER / "batch_record_add.py"
     return source.read_bytes()
 
     # Kept unreachable only as historical generator input for old source trees.
@@ -530,10 +525,10 @@ def _expected_payload(root: Path) -> dict[str, bytes]:
         wheel = wheel_path.read_bytes()
     digest = _sha256(wheel)
     return {
-        "scripts/run_cortex.py": _runner_bytes(digest),
-        "scripts/run_cortex.cmd": _windows_launcher_bytes(),
-        "scripts/runtime-manifest.json": _manifest_bytes(digest),
-        f"scripts/vendor/{WHEEL_NAME}": wheel,
+        "run_cortex.py": _runner_bytes(digest),
+        "run_cortex.cmd": _windows_launcher_bytes(),
+        "runtime-manifest.json": _manifest_bytes(digest),
+        f"vendor/{WHEEL_NAME}": wheel,
     }
 
 
@@ -556,15 +551,11 @@ def _ordinary(path: Path, *, directory: bool) -> bool:
     return True
 
 
-def _prepare_skill(root: Path, skill_name: str, expected: dict[str, bytes]) -> Path:
-    skill = root / "skills" / skill_name
+def _prepare_skill(root: Path, expected: dict[str, bytes]) -> Path:
+    skill = root / ADAPTER
     if not _ordinary(skill, directory=True):
-        raise RuntimeError(f"missing skill directory: {skill_name}")
-    scripts = skill / "scripts"
-    if scripts.exists() or scripts.is_symlink():
-        _ordinary(scripts, directory=True)
-    else:
-        scripts.mkdir()
+        raise RuntimeError("missing KB adapter directory")
+    scripts = skill
     vendor = scripts / "vendor"
     if vendor.exists() or vendor.is_symlink():
         _ordinary(vendor, directory=True)
@@ -572,67 +563,50 @@ def _prepare_skill(root: Path, skill_name: str, expected: dict[str, bytes]) -> P
         vendor.mkdir()
 
     allowed_files = {Path(relative).as_posix() for relative in expected}
-    allowed_files.add("scripts/batch_record_add.py")
-    allowed_directories = {"scripts", "scripts/vendor"}
+    allowed_files.add("batch_record_add.py")
+    allowed_directories = {"vendor"}
     for path in sorted(scripts.rglob("*"), key=lambda value: value.as_posix().encode("utf-8")):
         relative = path.relative_to(skill).as_posix()
         result = path.lstat()
         if stat.S_ISLNK(result.st_mode) or _is_reparse(result):
-            raise RuntimeError(f"linked runtime artifact is forbidden: {skill_name}/{relative}")
+            raise RuntimeError(f"linked KB runtime artifact is forbidden: {relative}")
         if stat.S_ISDIR(result.st_mode):
             if relative not in allowed_directories:
-                raise RuntimeError(f"unexpected runtime directory: {skill_name}/{relative}")
+                raise RuntimeError(f"unexpected KB runtime directory: {relative}")
         elif stat.S_ISREG(result.st_mode):
-            generated_wheel = relative.startswith("scripts/vendor/cortex_record_kb-") and relative.endswith("-py3-none-any.whl")
+            generated_wheel = relative.startswith("vendor/cortex_record_kb-") and relative.endswith("-py3-none-any.whl")
             if relative not in allowed_files and not generated_wheel:
-                raise RuntimeError(f"unexpected runtime artifact: {skill_name}/{relative}")
+                raise RuntimeError(f"unexpected KB runtime artifact: {relative}")
         else:
-            raise RuntimeError(f"nonordinary runtime artifact is forbidden: {skill_name}/{relative}")
+            raise RuntimeError(f"nonordinary KB runtime artifact is forbidden: {relative}")
     return skill
 
 
 def _install_payload(root: Path, expected: dict[str, bytes]) -> None:
-    prepared = [(skill_name, _prepare_skill(root, skill_name, expected)) for skill_name in RUNTIME_SKILLS]
-    for skill_name, skill in prepared:
-        for stale in (skill / "scripts" / "vendor").glob("cortex_record_kb-*-py3-none-any.whl"):
-            if stale.name != WHEEL_NAME:
-                stale.unlink()
-        for relative, raw in expected.items():
-            destination = skill / Path(relative)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(raw)
-        batch = skill / "scripts" / "batch_record_add.py"
-        if skill_name in BATCH_SKILLS:
-            batch.write_bytes(_batch_helper_bytes())
-        elif batch.exists() or batch.is_symlink():
-            _ordinary(batch, directory=False)
-            batch.unlink()
+    skill = _prepare_skill(root, expected)
+    for stale in (skill / "vendor").glob("cortex_record_kb-*-py3-none-any.whl"):
+        if stale.name != WHEEL_NAME:
+            stale.unlink()
+    for relative, raw in expected.items():
+        destination = skill / Path(relative)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(raw)
+    (skill / "batch_record_add.py").write_bytes(_batch_helper_bytes())
 
 
 def _check_payload(root: Path, expected: dict[str, bytes]) -> None:
-    observed: list[dict[str, bytes]] = []
-    for skill_name in RUNTIME_SKILLS:
-        skill = _prepare_skill(root, skill_name, expected)
-        actual: dict[str, bytes] = {}
-        for relative, raw in expected.items():
-            path = skill / Path(relative)
-            if not path.is_file() or path.is_symlink() or path.read_bytes() != raw:
-                raise RuntimeError(f"skill runtime drift: {skill_name}/{relative}")
-            actual[relative] = path.read_bytes()
-        wheels = sorted((skill / "scripts" / "vendor").glob("*.whl"))
-        if [item.name for item in wheels] != [WHEEL_NAME]:
-            raise RuntimeError(f"unexpected skill runtime artifact: {skill_name}")
-        observed.append(actual)
-    if any(payload != observed[0] for payload in observed[1:]):
-        raise RuntimeError("skill runtime payloads are not byte-identical")
+    skill = _prepare_skill(root, expected)
+    for relative, raw in expected.items():
+        path = skill / Path(relative)
+        if not path.is_file() or path.is_symlink() or path.read_bytes() != raw:
+            raise RuntimeError(f"KB adapter runtime drift: {relative}")
+    wheels = sorted((skill / "vendor").glob("*.whl"))
+    if [item.name for item in wheels] != [WHEEL_NAME]:
+        raise RuntimeError("unexpected KB adapter runtime artifact")
     expected_batch = _batch_helper_bytes()
-    for skill_name in RUNTIME_SKILLS:
-        batch = root / "skills" / skill_name / "scripts" / "batch_record_add.py"
-        if skill_name in BATCH_SKILLS:
-            if not _ordinary(batch, directory=False) or batch.read_bytes() != expected_batch:
-                raise RuntimeError(f"batch helper drift: {skill_name}")
-        elif batch.exists() or batch.is_symlink():
-            raise RuntimeError(f"batch helper is forbidden in {skill_name}")
+    batch = skill / "batch_record_add.py"
+    if not _ordinary(batch, directory=False) or batch.read_bytes() != expected_batch:
+        raise RuntimeError("KB batch helper drift")
 
 
 def main() -> int:
@@ -644,7 +618,7 @@ def main() -> int:
     if not args.check:
         _install_payload(root, expected)
     _check_payload(root, expected)
-    digest = _sha256(expected[f"scripts/vendor/{WHEEL_NAME}"])
+    digest = _sha256(expected[f"vendor/{WHEEL_NAME}"])
     print(f"{WHEEL_NAME} sha256={digest}")
     return 0
 

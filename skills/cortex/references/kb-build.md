@@ -1,13 +1,13 @@
 
 # Cortex KB build
 
-Use this role only when the user explicitly names `cortex-kb-build`, or explicitly invokes `cortex` and the router selects KB build. Generic note, KB, or coding requests are insufficient triggers.
+Use this role only when the user explicitly invokes `cortex` and the router selects KB build. Generic note, KB, or coding requests are insufficient triggers.
 
 Use this skill only for `manage.init`, `manage.config.set`, and `registry.set`. Never add, edit, show, or delete records, and never use another runtime route as a build step. The embedded runtime remains the complete closed Cortex 8.1 CLI; these ownership boundaries are this skill's contract, not runtime route removal.
 
 ## Verified offline runtime
 
-Set `CORTEX_PYTHON` to the lexical absolute path of the intended Python 3.11/UCD 14 executable. The launcher verifies that path is an ordinary non-reparse file reached through ordinary non-reparse ancestors and is the same filesystem entry as `sys.executable`. On POSIX invoke `"$CORTEX_PYTHON" -I <ABSOLUTE-SKILL>/scripts/run_cortex.py`; on Windows use the identical convenience launcher `<ABSOLUTE-SKILL>\scripts\run_cortex.cmd`. First require `--version` to emit exactly `cortex 8.1.0` on stdout and empty stderr. Do not use PATH or fall back to a global command, ambient package, installation, sibling skill, network, or update.
+Set `CORTEX_PYTHON` to the lexical absolute path of the intended Python 3.11/UCD 14 executable. The launcher verifies that path is an ordinary non-reparse file reached through ordinary non-reparse ancestors and is the same filesystem entry as `sys.executable`. On POSIX invoke `"$CORTEX_PYTHON" -I <ABSOLUTE-CORTEX-SKILL>/scripts/kb/run_cortex.py`; on Windows use the identical convenience launcher `<ABSOLUTE-CORTEX-SKILL>\scripts\kb\run_cortex.cmd`. First require `--version` to emit exactly `cortex 8.1.0` on stdout and empty stderr. Do not use PATH or fall back to a global command, ambient package, installation, another skill, network, or update.
 
 Set `ANTI_ENTROPY_CORE_RUNNER` to the absolute path to
 `anti-entropy-core/scripts/knowledge_unit_runner.py` before every build command
@@ -64,4 +64,3 @@ Owned command forms are:
 ```
 
 Do not add persistent session files, manifests, journals, receipts, or recovery state.
-

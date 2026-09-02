@@ -14,11 +14,12 @@ ROOT = Path(__file__).parents[1]
 
 
 def _packaged(skill: str, *args: str) -> subprocess.CompletedProcess[str]:
-    skill_root = ROOT / "skills" / skill
+    assert skill in {"cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage"}
+    skill_root = ROOT / "skills" / "cortex" / "scripts" / "kb"
     environment = dict(os.environ)
     environment["CORTEX_PYTHON"] = os.path.abspath(sys.executable)
     return subprocess.run(
-        [sys.executable, "-I", str(skill_root / "scripts" / "run_cortex.py"), *args],
+        [sys.executable, "-I", str(skill_root / "run_cortex.py"), *args],
         cwd=skill_root,
         env=environment,
         capture_output=True,

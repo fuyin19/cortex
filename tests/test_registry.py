@@ -167,9 +167,9 @@ def test_sc_030_static_contract_has_no_product_migration_or_extra_state(tmp_path
     assert not any(word in " ".join(surface["routes"]) for word in ("migrate", "rename", "move", "batch", "search"))
     assert not (root / "skills" / "record-build" / "SKILL.md").exists()
     assert not (root / "skills" / "record-manage" / "SKILL.md").exists()
-    assert (root / "skills" / "cortex-kb-ingest" / "SKILL.md").is_file()
-    assert (root / "skills" / "cortex-kb-build" / "SKILL.md").is_file()
-    assert (root / "skills" / "cortex-kb-manage" / "SKILL.md").is_file()
+    assert (root / "skills" / "cortex" / "SKILL.md").is_file()
+    assert (root / "skills/cortex/scripts/kb/run_cortex.py").is_file()
+    assert (root / "skills/cortex/scripts/kb/batch_record_add.py").is_file()
     assert not (root / "skills" / "cortex-build").exists()
     assert not (root / "skills" / "cortex-manage").exists()
 

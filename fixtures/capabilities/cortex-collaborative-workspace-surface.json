@@ -12,7 +12,9 @@
     "collaborative-workspace-envelope/v1",
     "agent-workbench-envelope/v1"
   ],
-  "skill": "cortex-collaborative-workspace",
+  "skill": "cortex",
+  "role": "collaborative-workspace",
+  "adapter": "skills/cortex/scripts/collaborative-workspace",
   "invocation_policy": "explicit-only",
   "provider_routes": [
     "knowledge-unit-copy",

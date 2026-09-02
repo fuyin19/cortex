@@ -11,15 +11,15 @@ import zipfile
 
 
 ROOT = Path(__file__).parents[1]
-SKILL = ROOT / "skills" / "cortex-collaborative-workspace"
-RUNNER = SKILL / "scripts" / "run_collaborative_workspace.py"
-WHEEL = SKILL / "scripts" / "vendor" / "cortex_collaborative_workspace-1.1.0-py3-none-any.whl"
+SKILL = ROOT / "skills" / "cortex" / "scripts" / "collaborative-workspace"
+RUNNER = SKILL / "run_collaborative_workspace.py"
+WHEEL = SKILL / "vendor" / "cortex_collaborative_workspace-1.1.0-py3-none-any.whl"
 CORE_RUNNER = ROOT.parent / "anti-entropy-core" / "scripts" / "knowledge_unit_runner.py"
 PAYLOADS = (
-    "scripts/run_collaborative_workspace.py",
-    "scripts/run_collaborative_workspace.cmd",
-    "scripts/runtime-manifest.json",
-    "scripts/vendor/cortex_collaborative_workspace-1.1.0-py3-none-any.whl",
+    "run_collaborative_workspace.py",
+    "run_collaborative_workspace.cmd",
+    "runtime-manifest.json",
+    "vendor/cortex_collaborative_workspace-1.1.0-py3-none-any.whl",
 )
 
 
@@ -33,7 +33,7 @@ def _environment() -> dict[str, str]:
 
 def _run(*args: str, skill: Path = SKILL, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "-I", str(skill / "scripts" / "run_collaborative_workspace.py"), *args],
+        [sys.executable, "-I", str(skill / "run_collaborative_workspace.py"), *args],
         cwd=skill, env=env or _environment(), capture_output=True, text=True, timeout=60, check=False,
     )
 
@@ -47,7 +47,7 @@ def test_workspace_runtime_is_deterministic_closed_and_dependency_free() -> None
     after = {relative: (SKILL / relative).read_bytes() for relative in PAYLOADS}
     assert checked.returncode == 0 and checked.stderr == "" and "sha256=" in checked.stdout
     assert before == after
-    manifest = json.loads((SKILL / "scripts" / "runtime-manifest.json").read_text("utf-8"))
+    manifest = json.loads((SKILL / "runtime-manifest.json").read_text("utf-8"))
     assert manifest == {
         "distribution": "cortex-collaborative-workspace",
         "import": "cortex_collaborative_workspace",
@@ -63,7 +63,7 @@ def test_workspace_runtime_is_deterministic_closed_and_dependency_free() -> None
         metadata = archive.read("cortex_collaborative_workspace-1.1.0.dist-info/METADATA").decode("utf-8")
     assert "Requires-Dist:" not in metadata and not any(name.endswith("entry_points.txt") for name in names)
     assert "cortex_collaborative_workspace/workspace.py" in names
-    assert not (ROOT / "skills" / "cortex" / "scripts").exists()
+    assert not (SKILL / "SKILL.md").exists()
 
 
 def test_workspace_runtime_version_tamper_and_binding_fail_closed(tmp_path: Path) -> None:
@@ -71,7 +71,7 @@ def test_workspace_runtime_version_tamper_and_binding_fail_closed(tmp_path: Path
     assert version.returncode == 0 and version.stdout == "cortex-collaborative-workspace 1.1.0\n"
     copied = tmp_path / "skill"
     shutil.copytree(SKILL, copied)
-    wheel = copied / "scripts" / "vendor" / WHEEL.name
+    wheel = copied / "vendor" / WHEEL.name
     wheel.write_bytes(wheel.read_bytes() + b"tamper")
     tampered = _run("--version", skill=copied)
     assert tampered.returncode == 70 and "wheel_digest_mismatch" in tampered.stderr
@@ -100,14 +100,10 @@ def test_workspace_surface_fixture_and_router_are_exact() -> None:
     assert fixture["routes"] == [
         "collaborative_workspace.prepare", "collaborative_workspace.status", "collaborative_workspace.validate",
     ]
-    assert fixture["skill"] == "cortex-collaborative-workspace"
-    skill = (SKILL / "SKILL.md").read_text("utf-8")
-    assert "Explicit invocation only" in skill and "Generic" in skill and "insufficient" in skill
-    assert (SKILL / "agents" / "openai.yaml").read_text("utf-8") == (
-        "policy:\n  allow_implicit_invocation: false\n"
-    )
+    assert fixture["skill"] == "cortex"
+    assert fixture["adapter"] == "skills/cortex/scripts/collaborative-workspace"
     router = (ROOT / "skills" / "cortex" / "SKILL.md").read_text("utf-8")
-    assert "Collaborative Workspace" in router and "../cortex-collaborative-workspace/SKILL.md" in router
+    assert "Collaborative Workspace" in router and "scripts/" in router
 
 
 def test_workspace_runtime_source_and_wheel_have_parity(tmp_path: Path) -> None:

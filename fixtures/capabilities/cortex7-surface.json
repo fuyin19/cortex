@@ -17,33 +17,25 @@
   "build_profile_policy": {"tag_transition": "keyed-monotonic-append", "description_edits": true, "populated_layout": "byte-identical"},
   "skill_taxonomy": {
     "router": "cortex",
-    "canonical": ["cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage"],
-    "canonical_roles": ["cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage", "cortex-notes-ingest", "cortex-notes-build", "cortex-notes-manage"],
-    "domain_skills": ["cortex-collaborative-workspace"],
+    "exposed_skills": ["cortex"],
+    "internal_roles": ["kb.ingest", "kb.build", "kb.manage", "notes.ingest", "notes.build", "notes.manage", "collaborative-workspace"],
     "write_owners": {
-      "align.apply": "cortex-kb-manage",
-      "manage.init": "cortex-kb-build",
-      "manage.config.set": "cortex-kb-build",
-      "registry.set": "cortex-kb-build",
-      "record.add": "cortex-kb-ingest",
-      "record.edit": "cortex-kb-manage",
-      "record.delete": "cortex-kb-manage"
+      "align.apply": "kb.manage",
+      "manage.init": "kb.build",
+      "manage.config.set": "kb.build",
+      "registry.set": "kb.build",
+      "record.add": "kb.ingest",
+      "record.edit": "kb.manage",
+      "record.delete": "kb.manage"
     },
-    "read_owner": "cortex-kb-manage",
+    "read_owner": "kb.manage",
     "aliases": {},
     "invocation_policy": {
-      "cortex": "explicit-only",
-      "cortex-kb-ingest": "explicit-only",
-      "cortex-kb-build": "explicit-only",
-      "cortex-kb-manage": "explicit-only",
-      "cortex-notes-ingest": "explicit-only",
-      "cortex-notes-build": "explicit-only",
-      "cortex-notes-manage": "explicit-only",
-      "cortex-collaborative-workspace": "explicit-only"
+      "cortex": "explicit-only"
     },
-    "router_runtime": false,
+    "router_runtime": true,
     "enforcement": "skill-contract-only"
   },
-  "skill_runtime": {"skills": ["cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage"], "artifact": "cortex_record_kb-8.1.0-py3-none-any.whl", "offline": true, "independently_complete": false, "payloads_byte_identical": true, "required_environment": ["CORTEX_PYTHON", "ANTI_ENTROPY_CORE_RUNNER"], "human_stream_encoding": "utf-8", "json_ascii_escaping": true, "windows_launcher": "run_cortex.cmd"},
-  "batch_helper": {"skills": ["cortex-kb-ingest"], "script": "batch_record_add.py", "schema_version": 1, "command": "record.add.batch", "core_route": false, "sequential": true, "rollback": false}
+  "skill_runtime": {"adapter": "skills/cortex/scripts/kb", "artifact": "cortex_record_kb-8.1.0-py3-none-any.whl", "offline": true, "required_environment": ["CORTEX_PYTHON", "ANTI_ENTROPY_CORE_RUNNER"], "human_stream_encoding": "utf-8", "json_ascii_escaping": true, "windows_launcher": "run_cortex.cmd"},
+  "batch_helper": {"role": "kb.ingest", "adapter": "skills/cortex/scripts/kb", "script": "batch_record_add.py", "schema_version": 1, "command": "record.add.batch", "core_route": false, "sequential": true, "rollback": false}
 }
