@@ -169,26 +169,21 @@ def _run(argv: list[str]) -> int:
     _job_version, items = _validate_job(_read_job(args.job))
     runner = Path(__file__).absolute().parent / "run_cortex.py"
     base = [sys.executable, "-I", str(runner)]
-    preflight = _invoke([*base, "--version"])
-    if preflight.returncode != 0 or preflight.stdout.replace(b"\r\n", b"\n") != b"cortex 8.0.0\n" or preflight.stderr != b"":
-        raise BatchUsage("runner_bootstrap_failed")
-    results: list[dict[str, Any]] = []
     with tempfile.TemporaryDirectory(prefix="cortex-record-add-batch-") as temporary:
-        temporary_path = Path(temporary)
-        for index, item in enumerate(items):
-            metadata_path = temporary_path / f"item-{index}.json"
-            metadata_path.write_text(
-                json.dumps(item["metadata"], ensure_ascii=False, separators=(",", ":")) + "\n",
-                encoding="utf-8",
-            )
-            command = [*base, "--json", *selectors, "record", "add"]
-            if "source" in item:
-                command.extend(("--source", item["source"]))
-            if "conversion" in item:
-                command.extend(("--conversion", item["conversion"]))
-            command.extend(("--metadata", str(metadata_path)))
-            results.append({"id": item["id"], "result": _result(_invoke(command))})
-    return _write_wrapper(results, len(items))
+        normalized = Path(temporary) / "job.json"
+        normalized.write_text(json.dumps({"version": _job_version, "items": items}, ensure_ascii=False,
+                                         separators=(",", ":")) + "\n", encoding="utf-8")
+        process = _invoke([*base, *selectors, "--_record-add-batch", str(normalized)])
+        if process.returncode not in {0, 1} or process.stderr != b"":
+            raise BatchUsage("runner_bootstrap_failed" if process.returncode == 70 else "runner_non_result")
+        try:
+            wrapper = json.loads(process.stdout.decode("ascii"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise BatchUsage("runner_non_result") from exc
+        if not isinstance(wrapper, dict) or wrapper.get("command") != "record.add.batch":
+            raise BatchUsage("runner_non_result")
+        sys.stdout.buffer.write(process.stdout)
+        return process.returncode
 
 
 def main() -> int:

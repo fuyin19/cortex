@@ -14,10 +14,10 @@ import unicodedata
 import zipfile
 
 
-EXPECTED_VERSION = "8.0.0"
+EXPECTED_VERSION = "8.1.0"
 EXPECTED_DISTRIBUTION = "cortex-record-kb"
-EXPECTED_WHEEL_FILENAME = "cortex_record_kb-8.0.0-py3-none-any.whl"
-EXPECTED_WHEEL_SHA256 = "ced95a33752b98df41087d95b9a367865f4a2249a300c6dcc05178b96d246dce"
+EXPECTED_WHEEL_FILENAME = "cortex_record_kb-8.1.0-py3-none-any.whl"
+EXPECTED_WHEEL_SHA256 = "53965e2e3757e27fe665d59b34e91394658673500497343db97936516ffe7e6e"
 EXPECTED_MANIFEST_KEYS = {
     "schema_version", "distribution", "import", "version", "wheel",
     "wheel_sha256", "python", "isolation",
@@ -82,7 +82,7 @@ def _load_manifest(path: Path) -> dict[str, object]:
 
 
 def _verify_archive(path: Path) -> None:
-    metadata_name = "cortex_record_kb-8.0.0.dist-info/METADATA"
+    metadata_name = "cortex_record_kb-8.1.0.dist-info/METADATA"
     try:
         with zipfile.ZipFile(path, "r") as archive:
             names = archive.namelist()

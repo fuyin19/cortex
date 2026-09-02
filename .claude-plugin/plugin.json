@@ -1,6 +1,6 @@
 {
   "name": "cortex",
-  "version": "10.0.0",
+  "version": "11.0.0",
   "description": "Explicit-only Cortex router with isolated Record KB, Notes, and Collaborative Workspace runtimes.",
   "author": {
     "name": "fuyin"

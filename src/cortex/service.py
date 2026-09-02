@@ -293,6 +293,7 @@ class CortexService:
         self.kb_root = Path(os.path.abspath(kb_root)) if kb_root is not None else None
         self.bundle_id = bundle_id
         self.core = core
+        self._active_mutation_report: ValidationReport | None = None
         if self.workspace is None and (self.kb_root is None or self.bundle_id is None):
             raise ValueError("An unresolved service requires both kb_root and bundle_id")
 
@@ -320,6 +321,9 @@ class CortexService:
 
     @contextmanager
     def _mutation_report(self) -> Iterator[ValidationReport]:
+        if self._active_mutation_report is not None:
+            yield self._active_mutation_report
+            return
         lock_path = self._lock_path()
         if self.kb_root is None:
             assert self.workspace is not None
@@ -335,6 +339,25 @@ class CortexService:
             report = validate_workspace(self.workspace, locked_record_schema=locked_schema, core=self._core())
             _raise_invalid_report(report)
             yield report
+
+    @contextmanager
+    def batch_add_context(self) -> Iterator[None]:
+        """Private batch scope: one native lock, validation, and Core process."""
+        core = self._core()
+        with core.session():
+            with self._mutation_report() as report:
+                self._active_mutation_report = report
+                try:
+                    yield
+                finally:
+                    self._active_mutation_report = None
+
+    def batch_revalidate(self) -> None:
+        """Rebuild private batch state after a Result with uncertain effects."""
+        assert self._active_mutation_report is not None and self.workspace is not None
+        report = validate_workspace(self.workspace, core=self._core())
+        _raise_invalid_report(report)
+        self._active_mutation_report = report
 
     def init(self) -> Outcome:
         root_lock = self.workspace.parent / ROOT_LOCK_FILENAME
@@ -501,6 +524,7 @@ class CortexService:
                     layout=layout,
                     check_folder=False,
                     core=self._core(),
+                    _validate_envelope=False,
                 )
                 if problems:
                     first = problems[0]
@@ -708,6 +732,8 @@ class RegistryService:
                 first = problems[0]
                 raise validation_error(first["message"], first["code"], path=first.get("path"), issues=problems)
             if current is None:
+                if candidate.get("version") == 1:
+                    candidate = {"contract": "cortex-kb-registry/v2", "version": 2, "bundles": candidate["bundles"]}
                 try:
                     with current_path.open("xb") as stream:
                         stream.write(json_bytes(candidate))

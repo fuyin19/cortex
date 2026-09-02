@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,31 @@ class CoreRunner:
                 runner=raw,
             )
         self.path = Path(os.path.abspath(candidate))
+        self._process: subprocess.Popen[bytes] | None = None
+
+    @contextmanager
+    def session(self):
+        if self._process is not None:
+            yield self
+            return
+        try:
+            self._process = subprocess.Popen(
+                [sys.executable, "-I", str(self.path)], stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise io_error("Anti-entropy Core runner could not be started", "core_runner_start_failed", path=str(self.path), os_error=str(exc)) from exc
+        try:
+            yield self
+            assert self._process.stdin is not None
+            self._process.stdin.close()
+            code = self._process.wait()
+            if code != 0:
+                raise io_error("Anti-entropy Core runner process failed", "core_runner_process_failed", path=str(self.path), process_exit_code=code)
+        finally:
+            process, self._process = self._process, None
+            if process is not None and process.poll() is None:
+                process.kill(); process.wait()
 
     @classmethod
     def from_config(cls, runner: str | os.PathLike[str] | None = None) -> "CoreRunner":
@@ -64,6 +90,17 @@ class CoreRunner:
             )
             + "\n"
         ).encode("utf-8")
+        if self._process is not None:
+            process = self._process
+            assert process.stdin is not None and process.stdout is not None
+            try:
+                process.stdin.write(wire); process.stdin.flush()
+                stdout = process.stdout.readline()
+            except OSError as exc:
+                raise io_error("Anti-entropy Core runner protocol failed", "core_protocol_error", path=str(self.path), command=command) from exc
+            if stdout == b"":
+                raise io_error("Anti-entropy Core runner ended early", "core_protocol_error", path=str(self.path), command=command)
+            return self._decode_result(command, stdout)
         try:
             completed = subprocess.run(
                 [sys.executable, "-I", str(self.path)],
@@ -88,8 +125,11 @@ class CoreRunner:
                 command=command,
                 process_exit_code=completed.returncode,
             )
+        return self._decode_result(command, completed.stdout)
+
+    def _decode_result(self, command: str, stdout: bytes) -> CoreResult:
         try:
-            payload = json.loads(completed.stdout.decode("utf-8", errors="strict"))
+            payload = json.loads(stdout.decode("utf-8", errors="strict"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise io_error(
                 "Anti-entropy Core runner emitted invalid JSON",

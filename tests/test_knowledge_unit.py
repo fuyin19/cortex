@@ -69,6 +69,8 @@ def test_explicit_runner_has_no_handshake_and_stage_complete_is_called_once(tmp_
     assert len(completed) == 1
     assert completed[0]["request"]["private_root_files"] == ["record.json"]
     assert Path(completed[0]["request"]["path"]).is_absolute()
+    staged_path = completed[0]["request"]["path"]
+    assert not any(item["command"] == "validate" and item["request"]["path"] == staged_path for item in calls)
 
 
 def test_conversion_uses_inspect_and_non_ok_result_is_preserved(tmp_path, capsys, monkeypatch, explicit_core_runner):

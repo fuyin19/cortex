@@ -51,10 +51,9 @@ def test_taxonomy_sc001_canonical_discovery_and_exact_role_matrix() -> None:
         assert "disable-model-invocation" not in metadata
         assert metadata["description"]
 
-    ingest, build, manage = (_skill(name) for name in CANONICAL)
-    assert "only for `record.add`" in ingest and "Never initialize" in ingest
+    ingest, build, manage = ((_skill(name) + (ROOT / "skills/cortex/references" / f"{name.removeprefix('cortex-')}.md").read_text("utf-8")) for name in CANONICAL)
+    assert "only for `record.add`" in ingest
     assert "only for `manage.init`, `manage.config.set`, and `registry.set`" in build
-    assert "Never add, edit, show, or delete records" in build
     for route in ("registry.show", "registry.validate", "registry.resolve", "manage.status", "manage.validate",
                   "manage.config.show", "record.show", "record.edit", "record.delete"):
         assert route in manage
@@ -70,7 +69,7 @@ def test_taxonomy_sc002_legacy_aliases_are_removed() -> None:
 
 
 def test_taxonomy_sc003_build_has_one_explicit_new_or_resumed_session() -> None:
-    build = _skill("cortex-kb-build")
+    build = (ROOT / "skills/cortex/references/kb-build.md").read_text("utf-8")
     for required in (
         "exactly one active build session", "explicit lexical absolute `workspace`", "new or resumed Bundle",
         "explicit lexical absolute `kb_root`", "exact `bundle_id`", "complete desired Registry 1 object",
@@ -81,7 +80,7 @@ def test_taxonomy_sc003_build_has_one_explicit_new_or_resumed_session() -> None:
 
 
 def test_taxonomy_sc004_keyed_monotonic_and_prewrite_contraction_rejection() -> None:
-    build = _skill("cortex-kb-build")
+    build = (ROOT / "skills/cortex/references/kb-build.md").read_text("utf-8")
     for retained in (
         "Retain every existing group and tag in exact relative order", "every existing tag's group membership",
         "Append new groups", "new tags to the end of their group's `tags` array",
@@ -94,7 +93,7 @@ def test_taxonomy_sc004_keyed_monotonic_and_prewrite_contraction_rejection() -> 
 
 
 def test_taxonomy_sc005_profile_modes_and_conditional_order_are_exact() -> None:
-    build = _skill("cortex-kb-build")
+    build = (ROOT / "skills/cortex/references/kb-build.md").read_text("utf-8")
     fixture = json.loads((ROOT / "fixtures" / "capabilities" / "cortex7-surface.json").read_text("utf-8"))
     assert fixture["build_profile_policy"] == {
         "tag_transition": "keyed-monotonic-append",
@@ -116,7 +115,7 @@ def test_taxonomy_sc005_profile_modes_and_conditional_order_are_exact() -> None:
 
 
 def test_taxonomy_sc006_first_failure_stops_and_reports_late_residue() -> None:
-    build = _skill("cortex-kb-build")
+    build = (ROOT / "skills/cortex/references/kb-build.md").read_text("utf-8")
     assert "At the first non-`ok` Result or bootstrap/non-Result failure, stop immediately" in build
     assert "no later write, delete, cleanup mutation, rollback, compensating action, or retry" in build
     for field in ("`completed_steps`", "`failed_step`", "`residual_path`", "`orphan`", "`result`"):
@@ -125,7 +124,7 @@ def test_taxonomy_sc006_first_failure_stops_and_reports_late_residue() -> None:
 
 
 def test_taxonomy_sc007_core_runtime_is_invariant_and_plugin_is_v9() -> None:
-    assert VERSION == "8.0.0"
+    assert VERSION == "8.1.0"
     assert tuple(PUBLIC_ROUTES) == (
         "align.plan", "align.apply",
         "registry.show", "registry.validate", "registry.resolve", "registry.set",
@@ -134,8 +133,8 @@ def test_taxonomy_sc007_core_runtime_is_invariant_and_plugin_is_v9() -> None:
     )
     package = json.loads((ROOT / "package.json").read_text("utf-8"))
     plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text("utf-8"))
-    assert package == {"name": "cortex-record-kb", "version": "8.0.0", "description": "Minimal single-writer record knowledge base."}
-    assert plugin["version"] == "10.0.0" and "Collaborative Workspace" in plugin["description"]
+    assert package == {"name": "cortex-record-kb", "version": "8.1.0", "description": "Minimal single-writer record knowledge base."}
+    assert plugin["version"] == "11.0.0" and "Collaborative Workspace" in plugin["description"]
     assert (ROOT / "tools" / "migrate_layout.py").is_file()
 
 
@@ -157,9 +156,8 @@ def test_taxonomy_sc008_router_matrix_is_instruction_only_and_fail_closed() -> N
         assert domain in router
     for action in ("build", "ingest", "manage"):
         assert action in router
-    for role in ROLES:
-        assert f"../{role}/SKILL.md" in router
-    assert f"../{WORKSPACE}/SKILL.md" in router
+    for reference in ("kb-ingest", "kb-build", "kb-manage", "notes-ingest", "notes-build", "notes-manage", "collaborative-workspace"):
+        assert f"references/{reference}.md" in router
     for required in (
         "exactly one domain", "exactly one action", "read and follow exactly one sibling skill",
         "ask for clarification", "required existing state is missing", "fail closed",

@@ -43,7 +43,7 @@ Repository boundary vocabulary: candidate under KB root; candidate under source 
 
 | Runtime scenario | Frozen semantic |
 |---|---|
-| runtime-sc001 | Each of three KB skill copies runs Cortex 8.0.0 with the explicitly configured external Core runner. |
+| runtime-sc001 | Each of three KB skill copies runs Cortex 8.1.0 with the explicitly configured external Core runner. |
 | runtime-sc002 | All three KB skills carry byte-identical runner, manifest, and wheel payloads. |
 | runtime-sc003 | PATH Cortex 4 sentinels are never invoked. |
 | runtime-sc004 | Hostile PYTHONPATH and ambient Cortex modules are ignored by isolated launch. |

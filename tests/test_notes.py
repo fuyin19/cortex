@@ -325,7 +325,7 @@ def test_notes_runtime_packaging_router_and_explicit_only_metadata(tmp_path: Pat
         skill = ROOT / "skills" / name
         payloads.append({relative: (skill / relative).read_bytes() for relative in (
             "scripts/run_notes.py", "scripts/run_notes.cmd", "scripts/runtime-manifest.json",
-            "scripts/vendor/cortex_notes-2.0.0-py3-none-any.whl",
+            "scripts/vendor/cortex_notes-2.1.0-py3-none-any.whl",
         )})
     assert payloads[0] == payloads[1] == payloads[2]
     assert not (ROOT / "skills/cortex/scripts").exists()
@@ -342,9 +342,9 @@ def test_notes_runtime_packaging_router_and_explicit_only_metadata(tmp_path: Pat
     runner = ROOT / "skills/cortex-notes-manage/scripts/run_notes.py"
     version = subprocess.run([sys.executable, "-I", str(runner), "--version"], cwd=runner.parent, env=env,
                              capture_output=True, text=True, check=False)
-    assert version.returncode == 0 and version.stdout == "cortex-notes 2.0.0\n"
+    assert version.returncode == 0 and version.stdout == "cortex-notes 2.1.0\n"
     copied = tmp_path / "skill"; shutil.copytree(ROOT / "skills/cortex-notes-manage", copied)
-    wheel = copied / "scripts/vendor/cortex_notes-2.0.0-py3-none-any.whl"; wheel.write_bytes(wheel.read_bytes() + b"tamper")
+    wheel = copied / "scripts/vendor/cortex_notes-2.1.0-py3-none-any.whl"; wheel.write_bytes(wheel.read_bytes() + b"tamper")
     failed = subprocess.run([sys.executable, "-I", str(copied / "scripts/run_notes.py"), "--version"], cwd=copied,
                             env=env, capture_output=True, text=True, check=False)
     assert failed.returncode == 70 and "wheel_digest_mismatch" in failed.stderr
@@ -352,7 +352,7 @@ def test_notes_runtime_packaging_router_and_explicit_only_metadata(tmp_path: Pat
 
 def test_notes_surface_is_closed_and_kb_runtime_sources_remain_separate() -> None:
     surface = json.loads((ROOT / "fixtures/capabilities/cortex-notes-surface.json").read_text("utf-8"))
-    assert surface["version"] == "2.0.0"
+    assert surface["version"] == "2.1.0"
     assert "notes.bundle.partition.add" not in surface["routes"]
     assert surface["profiles"] == ["note-schema.json", "tags.json", "layout.json"]
     assert surface["skill_taxonomy"]["router"] == "cortex"
@@ -369,4 +369,4 @@ def test_notes_surface_is_closed_and_kb_runtime_sources_remain_separate() -> Non
     for forbidden in ("import sqlite", "import requests", "import socket"):
         assert forbidden not in combined
     assert not any("cortex_notes" in path.read_text("utf-8") for path in (ROOT / "src/cortex").glob("*.py"))
-    assert json.loads((ROOT / "package.json").read_text("utf-8"))["version"] == "8.0.0"
+    assert json.loads((ROOT / "package.json").read_text("utf-8"))["version"] == "8.1.0"

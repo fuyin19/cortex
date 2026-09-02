@@ -1,8 +1,10 @@
 from __future__ import annotations
 import hashlib, importlib.util, json, os, shutil, stat
+from contextlib import contextmanager
 from pathlib import Path
 import pytest
 from cortex.cli import main
+from cortex.errors import CortexError, Status
 from cortex.constants import PUBLIC_ROUTES, VERSION
 from cortex.jsonio import json_bytes
 from cortex.tree import inventory_unit
@@ -67,7 +69,7 @@ def test_sc002_sc004_sc007_add_rejections_are_no_write(tmp_path, capsys):
     assert before == sorted(str(x.relative_to(bundle)) for x in bundle.rglob("*"))
 
 def test_sc006_sc008_sc009_profile_contract_and_empty_operability(tmp_path, capsys):
-    assert VERSION == "8.0.0"
+    assert VERSION == "8.1.0"
     bundle = tmp_path / "b"; invoke(capsys, "--workspace", str(bundle), "manage", "init")
     assert json.loads((bundle / "profiles/layout.json").read_text())["version"] == 5
     old = {"version": 3, "unit_name_tag_group": "project", "unit_name_strategy": "tag-title-date", "max_component_length": 96, "duplicate_name_strategy": "reject"}
@@ -239,3 +241,33 @@ def test_sc030_verification_matrix_is_exact_and_complete():
     ids = [line.split("|")[1].strip() for line in text.splitlines() if line.startswith("| sc-")]
     assert ids == [f"sc-{number:03d}" for number in range(1, 31)]
     for required in ("candidate under KB root", "candidate under source repo", "same-volume staging", "plan/build only", "no cutover"): assert required in text
+
+
+@pytest.mark.parametrize("fatal_code", ("core_protocol_error", "core_runner_process_failed"))
+def test_batch_core_transport_failure_aborts_before_later_item(tmp_path, monkeypatch, fatal_code):
+    import cortex.cli as cli
+
+    job = tmp_path / "job.json"
+    job.write_text(json.dumps({"items": [
+        {"id": "first", "metadata": {}, "source": str(tmp_path / "first.md")},
+        {"id": "later", "metadata": {}, "source": str(tmp_path / "later.md")},
+    ]}), encoding="utf-8")
+    calls = []
+
+    class FakeCoreRunner:
+        @staticmethod
+        def from_config(): return object()
+
+    class FakeService:
+        def __init__(self, *_args, **_kwargs): pass
+        @contextmanager
+        def batch_add_context(self): yield
+        def record_add(self, *_args):
+            calls.append("add")
+            raise CortexError("fatal core transport", status=Status.IO_ERROR, code=fatal_code)
+
+    monkeypatch.setattr(cli, "CoreRunner", FakeCoreRunner)
+    monkeypatch.setattr(cli, "CortexService", FakeService)
+    with pytest.raises(CortexError, match="fatal core transport"):
+        cli._private_batch(["--workspace", str(tmp_path / "bundle"), "--_record-add-batch", str(job)])
+    assert calls == ["add"]

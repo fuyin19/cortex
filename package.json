@@ -1,5 +1,5 @@
 {
   "name": "cortex-record-kb",
-  "version": "8.0.0",
+  "version": "8.1.0",
   "description": "Minimal single-writer record knowledge base."
 }

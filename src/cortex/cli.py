@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -215,10 +216,58 @@ def _configure_utf8(stream: Any) -> None:
         reconfigure(encoding="utf-8", errors="strict")
 
 
+def _private_batch(raw: list[str]) -> int:
+    marker = raw.index("--_record-add-batch")
+    selectors, job_path = raw[:marker], raw[marker + 1]
+    if len(selectors) == 2 and selectors[0] == "--workspace":
+        service = CortexService(Path(selectors[1]), core=CoreRunner.from_config())
+    elif len(selectors) == 4 and selectors[0] == "--kb-root" and selectors[2] == "--bundle-id":
+        service = CortexService(None, kb_root=Path(selectors[1]), bundle_id=selectors[3], core=CoreRunner.from_config())
+    else:
+        raise CortexError("Invalid private batch selector", status=Status.USAGE_ERROR, code="invalid_selector")
+    job = json.loads(Path(job_path).read_text("utf-8"))
+    results: list[dict[str, Any]] = []
+    uncertain = False
+    with tempfile.TemporaryDirectory(prefix="cortex-batch-metadata-") as temporary:
+        with service.batch_add_context():
+            for index, item in enumerate(job["items"]):
+                if uncertain:
+                    try:
+                        service.batch_revalidate()
+                    except CortexError as exc:
+                        if exc.code in {"core_protocol_error", "core_runner_start_failed", "core_runner_process_failed"}:
+                            raise
+                        results.append({"id": item["id"], "result": _error_result("record.add", exc)})
+                        continue
+                    uncertain = False
+                metadata = Path(temporary) / f"item-{index}.json"
+                metadata.write_text(json.dumps(item["metadata"], ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+                try:
+                    outcome = service.record_add(item.get("source"), item.get("conversion"), str(metadata))
+                    value = _result("record.add", outcome)
+                except CortexError as exc:
+                    if exc.code in {"core_protocol_error", "core_runner_start_failed", "core_runner_process_failed"}:
+                        raise
+                    value = _error_result("record.add", exc)
+                    uncertain = value["status"] == "io_error"
+                results.append({"id": item["id"], "result": value})
+    succeeded = sum(item["result"]["status"] == "ok" for item in results)
+    wrapper = {"schema_version": 1, "command": "record.add.batch", "items": results,
+               "summary": {"total": len(results), "succeeded": succeeded, "failed": len(results) - succeeded}}
+    _safe_write(sys.stdout, json.dumps(wrapper, ensure_ascii=True, separators=(",", ":")) + "\n")
+    return 0 if succeeded == len(results) else 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     _configure_utf8(sys.stdout)
     _configure_utf8(sys.stderr)
     raw = list(sys.argv[1:] if argv is None else argv)
+    if "--_record-add-batch" in raw:
+        try:
+            return _private_batch(raw)
+        except CortexError as exc:
+            _safe_write(sys.stderr, f"cortex record batch error: {exc.code}\n")
+            return 2
     json_mode = "--json" in raw
     if json_mode:
         raw = [item for item in raw if item != "--json"]

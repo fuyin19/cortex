@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-VERSION = "8.0.0"
+VERSION = "8.1.0"
 DIST_NAME = "cortex-record-kb"
 
 PUBLIC_ROUTES = (
@@ -23,7 +23,8 @@ PUBLIC_ROUTES = (
     "record.delete",
 )
 
-REGISTRY_VERSION = 1
+REGISTRY_VERSION = 2
+REGISTRY_CONTRACT = "cortex-kb-registry/v2"
 REGISTRY_FILENAME = "registry.json"
 ROOT_LOCK_FILENAME = ".cortex.lock"
 

@@ -15,7 +15,8 @@ import uuid
 from typing import Any, Iterator
 
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
+REGISTRY_CONTRACT = "cortex-notes-registry/v2"
 RESULT_CODES = {"ok": 0, "usage_error": 2, "validation_error": 3, "busy": 5, "io_error": 6}
 REGISTRY_ORDER = (
     ("daily-notes", "Daily notes"),
@@ -24,6 +25,7 @@ REGISTRY_ORDER = (
 )
 TOOL_PARTITIONS = (
     "agent-dev-utilities", "cortex", "default-workflow-framework", "file-processing", "ibd-utilities",
+    "anti-entropy-core",
 )
 IDEA_PARTITIONS = ("new-tools-and-functions", "preliminary-concepts-and-proofs")
 NOTE_KEYS = ("version", "id", "title", "created_at", "bundle_id", "partition", "tags", "body")
@@ -241,14 +243,17 @@ def _write_json(path: Path, value: object) -> None:
     path.write_bytes(_json_bytes(value))
 
 
-def registry_value() -> dict[str, Any]:
-    return {"version": 1, "bundles": [
+def registry_value(*, version: int = 2) -> dict[str, Any]:
+    value = {"version": version, "bundles": [
         {"id": bundle, "path": bundle, "description": description} for bundle, description in REGISTRY_ORDER
     ]}
+    if version == 2:
+        return {"contract": REGISTRY_CONTRACT, **value}
+    return value
 
 
 def _validate_registry(value: object) -> None:
-    if value != registry_value():
+    if value not in (registry_value(version=1), registry_value(version=2)):
         raise NotesError("validation_error", "registry_schema_invalid")
 
 
@@ -803,46 +808,52 @@ def _note_path(bundle_path: Path, partition: str, note: str, archived: bool,
     _ordinary(parent, directory=True); path = _child(parent, note); _ordinary(path, directory=True); return path
 
 
-def note_add(root: Path, tools_root: Path | None, bundle: str, partition: str | None, title: str,
-             body_file: Path, timestamp: str | None) -> dict[str, Any]:
+def _note_add_locked(root: Path, tools_root: Path | None, bundle: str, partition: str | None, title: str,
+                     body_file: Path, timestamp: str | None) -> dict[str, Any]:
     root = _absolute(root); created = _canonical_timestamp(timestamp)
     if not isinstance(title, str) or title.strip() == "": raise NotesError("validation_error", "title_invalid")
     title = title.strip(); body_file = _absolute(body_file); _ordinary(body_file, directory=False)
     try: body = body_file.read_bytes(); body.decode("utf-8")
     except (OSError, UnicodeError) as exc: raise NotesError("validation_error", "note_body_invalid") from exc
-    with _lock(root):
-        bundle_path, profiles, _raws, _partitions = _preflight(root, bundle)
-        if profiles["layout"]["partition"]["strategy"] == "date":
-            derived = created[:10].replace("-", "")
-            if partition not in (None, derived): raise NotesError("validation_error", "daily_partition_mismatch")
-            partition = derived
-        if partition is None: raise NotesError("usage_error", "partition_required")
-        _partition_allowed(profiles, partition, tools_root, add=True)
-        note = created[:10].replace("-", "") + "-" + created[11:19].replace(":", "") + created[20:26] + "-" + _slug(title)
-        _safe_component(note); base = _child(bundle_path, partition, partition=True)
-        if not base.exists():
-            if profiles["layout"]["partition"]["strategy"] != "date": raise NotesError("validation_error", "configured_partition_missing")
-            _publish_skeleton(bundle_path, partition, profiles)
-        else: _partition_shape(base, bundle, partition, profiles, deep=False)
-        destination = _child(base, note); archive = _child(base, profiles["layout"]["archive_directory"])
-        names = {entry.name.casefold() for entry in _entries(base)} | {entry.name.casefold() for entry in _entries(archive)}
-        if note.casefold() in names: raise NotesError("validation_error", "note_exists")
-        metadata = {"version": 1, "id": note, "title": title, "created_at": created, "bundle_id": bundle,
-                    "partition": partition, "tags": [partition], "body": "note.md"}
-        staging = _child(base, ".staging-" + uuid.uuid4().hex)
+    bundle_path, profiles, _raws, _partitions = _preflight(root, bundle)
+    if profiles["layout"]["partition"]["strategy"] == "date":
+        derived = created[:10].replace("-", "")
+        if partition not in (None, derived): raise NotesError("validation_error", "daily_partition_mismatch")
+        partition = derived
+    if partition is None: raise NotesError("usage_error", "partition_required")
+    _partition_allowed(profiles, partition, tools_root, add=True)
+    note = created[:10].replace("-", "") + "-" + created[11:19].replace(":", "") + created[20:26] + "-" + _slug(title)
+    _safe_component(note); base = _child(bundle_path, partition, partition=True)
+    if not base.exists():
+        if profiles["layout"]["partition"]["strategy"] != "date": raise NotesError("validation_error", "configured_partition_missing")
+        _publish_skeleton(bundle_path, partition, profiles)
+    else: _partition_shape(base, bundle, partition, profiles, deep=False)
+    destination = _child(base, note); archive = _child(base, profiles["layout"]["archive_directory"])
+    names = {entry.name.casefold() for entry in _entries(base)} | {entry.name.casefold() for entry in _entries(archive)}
+    if note.casefold() in names: raise NotesError("validation_error", "note_exists")
+    metadata = {"version": 1, "id": note, "title": title, "created_at": created, "bundle_id": bundle,
+                "partition": partition, "tags": [partition], "body": "note.md"}
+    staging = _child(base, ".staging-" + uuid.uuid4().hex)
+    try:
+        staging.mkdir(); _child(staging, "note.md").write_bytes(body); _write_json(_child(staging, "note.json"), metadata)
+        _unit(staging, bundle, partition, note, profiles); os.rename(staging, destination)
+    except (OSError, NotesError) as exc:
         try:
-            staging.mkdir(); _child(staging, "note.md").write_bytes(body); _write_json(_child(staging, "note.json"), metadata)
-            _unit(staging, bundle, partition, note, profiles); os.rename(staging, destination)
-        except (OSError, NotesError) as exc:
-            try:
-                for child in (staging / "note.md", staging / "note.json"):
-                    if child.exists(): child.unlink()
-                if staging.exists(): staging.rmdir()
-            except OSError: pass
-            if isinstance(exc, NotesError): raise
-            raise NotesError("io_error", "note_add_failed") from exc
+            for child in (staging / "note.md", staging / "note.json"):
+                if child.exists(): child.unlink()
+            if staging.exists(): staging.rmdir()
+        except OSError: pass
+        if isinstance(exc, NotesError): raise
+        raise NotesError("io_error", "note_add_failed") from exc
     digest = _digest(root, bundle, partition, note, False, destination, profiles)
     return result("notes.note.add", {"bundle_id": bundle, "partition": partition, "note": note, "tree_sha256": digest})
+
+
+def note_add(root: Path, tools_root: Path | None, bundle: str, partition: str | None, title: str,
+             body_file: Path, timestamp: str | None) -> dict[str, Any]:
+    root = _absolute(root)
+    with _lock(root):
+        return _note_add_locked(root, tools_root, bundle, partition, title, body_file, timestamp)
 
 
 def note_list(root: Path, bundle: str, partition: str, archived: bool | None) -> dict[str, Any]:

@@ -33,8 +33,9 @@ def create_bundle(root: Path, name: str, capsys: pytest.CaptureFixture[str]) -> 
     return bundle
 
 
-def registry_value(*entries: tuple[str, str, str]) -> dict:
-    return {"version": 1, "bundles": [{"id": bundle_id, "path": path, "description": description} for bundle_id, path, description in entries]}
+def registry_value(*entries: tuple[str, str, str], version: int = 2) -> dict:
+    value = {"version": version, "bundles": [{"id": bundle_id, "path": path, "description": description} for bundle_id, path, description in entries]}
+    return {"contract": "cortex-kb-registry/v2", **value} if version == 2 else value
 
 
 def set_registry(root: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], value: dict, name: str = "registry-input.json") -> tuple[int, dict]:

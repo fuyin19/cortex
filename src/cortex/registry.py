@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .constants import PROFILE_FILENAMES, REGISTRY_FILENAME, REGISTRY_VERSION, ROOT_LOCK_FILENAME
+from .constants import PROFILE_FILENAMES, REGISTRY_CONTRACT, REGISTRY_FILENAME, REGISTRY_VERSION, ROOT_LOCK_FILENAME
 from .core_runner import CoreRunner
 from .errors import CortexError, issue, validation_error
 from .jsonio import json_bytes, loads_object
@@ -57,13 +57,19 @@ def canonical_registry(value: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(entry, dict):
             return value
         ordered.append({"id": entry.get("id"), "path": entry.get("path"), "description": entry.get("description")})
-    return {"version": REGISTRY_VERSION, "bundles": ordered}
+    if value.get("version") == 1:
+        return {"version": 1, "bundles": ordered}
+    return {"contract": REGISTRY_CONTRACT, "version": REGISTRY_VERSION, "bundles": ordered}
 
 
 def validate_registry_value(value: dict[str, Any], *, label: str = REGISTRY_FILENAME) -> list[dict[str, Any]]:
-    problems = _exact_keys(value, {"version", "bundles"}, label)
-    if type(value.get("version")) is not int or value.get("version") != REGISTRY_VERSION:
-        problems.append(issue("invalid_registry_version", "Registry version must be integer 1", path=label))
+    version = value.get("version")
+    expected = {"version", "bundles"} if version == 1 else {"contract", "version", "bundles"}
+    problems = _exact_keys(value, expected, label)
+    if type(version) is not int or version not in {1, REGISTRY_VERSION}:
+        problems.append(issue("invalid_registry_version", "Registry version must be integer 1 or 2", path=label))
+    if version == REGISTRY_VERSION and value.get("contract") != REGISTRY_CONTRACT:
+        problems.append(issue("invalid_registry_contract", f"Registry contract must be {REGISTRY_CONTRACT}", path=label))
     bundles = value.get("bundles")
     if not isinstance(bundles, list):
         problems.append(issue("invalid_registry_bundles", "bundles must be an ordered array", path=label))
@@ -193,6 +199,8 @@ def validate_transition(previous: dict[str, Any], candidate: dict[str, Any]) -> 
     old_by_id = {entry["id"]: entry for entry in canonical_registry(previous)["bundles"]}
     new_by_id = {entry["id"]: entry for entry in canonical_registry(candidate)["bundles"]}
     problems: list[dict[str, Any]] = []
+    if previous.get("version") != candidate.get("version"):
+        problems.append(issue("registry_identity_change_forbidden", "Ordinary Registry operations do not change Registry identity", path=REGISTRY_FILENAME))
     for bundle_id, old in old_by_id.items():
         new = new_by_id.get(bundle_id)
         if new is None:

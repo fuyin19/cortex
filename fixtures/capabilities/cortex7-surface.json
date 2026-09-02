@@ -1,10 +1,11 @@
 {
   "distribution": "cortex-record-kb",
   "import": "cortex",
-  "version": "8.0.0",
+  "version": "8.1.0",
   "routes": ["align.plan", "align.apply", "registry.show", "registry.validate", "registry.resolve", "registry.set", "manage.init", "manage.status", "manage.validate", "manage.config.show", "manage.config.set", "record.add", "record.edit", "record.show", "record.delete"],
   "profiles": ["record-schema.json", "tags.json", "layout.json"],
-  "profile_versions": {"record": 1, "tag": 2, "layout": 5, "registry": 1},
+  "profile_versions": {"record": 1, "tag": 2, "layout": 5, "registry": [1, 2]},
+  "registry_identity": "cortex-kb-registry/v2",
   "partition_name_strategy": "tag",
   "unit_name_strategy": "tag-title-date",
   "record_operand": {"partition": "<exact-partition-tag>", "record": "<exact-unit-name>"},
@@ -43,6 +44,6 @@
     "router_runtime": false,
     "enforcement": "skill-contract-only"
   },
-  "skill_runtime": {"skills": ["cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage"], "artifact": "cortex_record_kb-8.0.0-py3-none-any.whl", "offline": true, "independently_complete": false, "payloads_byte_identical": true, "required_environment": ["CORTEX_PYTHON", "ANTI_ENTROPY_CORE_RUNNER"], "human_stream_encoding": "utf-8", "json_ascii_escaping": true, "windows_launcher": "run_cortex.cmd"},
+  "skill_runtime": {"skills": ["cortex-kb-ingest", "cortex-kb-build", "cortex-kb-manage"], "artifact": "cortex_record_kb-8.1.0-py3-none-any.whl", "offline": true, "independently_complete": false, "payloads_byte_identical": true, "required_environment": ["CORTEX_PYTHON", "ANTI_ENTROPY_CORE_RUNNER"], "human_stream_encoding": "utf-8", "json_ascii_escaping": true, "windows_launcher": "run_cortex.cmd"},
   "batch_helper": {"skills": ["cortex-kb-ingest"], "script": "batch_record_add.py", "schema_version": 1, "command": "record.add.batch", "core_route": false, "sequential": true, "rollback": false}
 }

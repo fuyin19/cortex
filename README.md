@@ -1,6 +1,6 @@
 # Cortex Record KB 8.0
 
-Cortex 8.0.0 is a small, single-writer record KB using Record 1, Tag 2, Layout 5, and Registry 1. A Bundle contains `profiles/` and nonempty tag-named partitions; each partition directly contains canonical record units. Layout 3 and Layout 4 are rejected by normal runtime operation.
+Cortex 8.1.0 is a small, single-writer record KB using Record 1, Tag 2, Layout 5, and exact Registry v1 or identity-bearing `cortex-kb-registry/v2`. New Registry roots use v2; ordinary operations do not migrate v1. A Bundle contains `profiles/` and nonempty tag-named partitions; each partition directly contains canonical record units. Layout 3 and Layout 4 are rejected by normal runtime operation.
 
 Layout 5 uses `partition_tag_group`, exact `partition_name_strategy: tag`, `unit_name_strategy: tag-title-date`, component limit 16..200, and duplicate rejection. Each record has Cortex-private `record.json` plus the base envelope owned by anti-entropy Core. Cortex retains record/profile/naming rules but does not vendor or fall back to a local envelope implementation. An empty Bundle may temporarily have a null group; add requires exactly one selected tag and derives both `<partition>/<tag-title-date-unit>` without new naming arguments.
 
