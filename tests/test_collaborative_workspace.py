@@ -14,7 +14,7 @@ from cortex_collaborative_workspace.core_runner import CoreRunner
 
 
 ROOT = Path(__file__).parents[1]
-CORE_RUNNER = ROOT.parent / "anti-entropy-core" / "scripts" / "knowledge_unit_runner.py"
+CORE_RUNNER = Path(os.environ["CORTEX_REAL_CORE_RUNNER"])
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +36,7 @@ def _tree(root: Path) -> dict[str, bytes | None]:
 def _fake_providers(monkeypatch: pytest.MonkeyPatch, *, warning: bool = False) -> list[Path]:
     observed: list[Path] = []
 
-    def convert(route: str, snapshot: Path, output_parent: Path, expected_unit: Path):
+    def convert(route: str, snapshot: Path, output_parent: Path, expected_unit: Path, core_runner: Path):
         assert route in {"file-conversion", "markdown-conversion"}
         assert "agent-workbench" not in snapshot.parts
         assert snapshot.name == expected_unit.name
@@ -52,7 +52,7 @@ def _fake_providers(monkeypatch: pytest.MonkeyPatch, *, warning: bool = False) -
         (expected_unit / "src").mkdir()
         (expected_unit / "src" / basename).write_bytes(snapshot.read_bytes())
         (expected_unit / "assets").mkdir()
-        CoreRunner().knowledge_unit_stage_complete(expected_unit)
+        CoreRunner(str(core_runner)).knowledge_unit_stage_complete(expected_unit)
         return ("ready_with_warnings", ["fixture_warning"]) if warning else ("ready", [])
 
     monkeypatch.setattr(workspace, "_run_provider", convert)
@@ -533,7 +533,7 @@ raise SystemExit(done.returncode)
     output = tmp_path / "candidate"
     output.mkdir()
     quality, warnings = workspace._run_provider(
-        "markdown-conversion", snapshot, output, output / "report.txt",
+        "markdown-conversion", snapshot, output, output / "report.txt", CORE_RUNNER,
     )
     assert (quality, warnings) == ("ready", [])
     assert (output / "report.txt" / "report.txt.md").is_file()

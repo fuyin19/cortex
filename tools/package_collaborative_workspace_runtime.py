@@ -15,11 +15,11 @@ import stat
 import zipfile
 
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 DISTRIBUTION = "cortex-collaborative-workspace"
 IMPORT_NAME = "cortex_collaborative_workspace"
-WHEEL_NAME = "cortex_collaborative_workspace-1.1.0-py3-none-any.whl"
-DIST_INFO = "cortex_collaborative_workspace-1.1.0.dist-info"
+WHEEL_NAME = "cortex_collaborative_workspace-1.1.1-py3-none-any.whl"
+DIST_INFO = "cortex_collaborative_workspace-1.1.1.dist-info"
 ADAPTER = Path("skills/cortex/scripts/collaborative-workspace")
 ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 SOURCE_FILES = {"__init__.py", "__main__.py", "cli.py", "core_runner.py", "workspace.py"}
@@ -53,7 +53,7 @@ def _source(root: Path) -> list[tuple[str, bytes]]:
         raise RuntimeError("Collaborative Workspace source package is incomplete")
     project = (root / "collaborative_workspace_runtime" / "pyproject.toml").read_text("utf-8")
     for exact in (
-        'name = "cortex-collaborative-workspace"', 'version = "1.1.0"', 'dependencies = []',
+        'name = "cortex-collaborative-workspace"', 'version = "1.1.1"', 'dependencies = []',
     ):
         if exact not in project:
             raise RuntimeError("Collaborative Workspace project contract mismatch")
@@ -66,7 +66,7 @@ def _wheel(root: Path) -> bytes:
     members = _source(root)
     members.extend((
         (f"{DIST_INFO}/METADATA", (
-            "Metadata-Version: 2.1\nName: cortex-collaborative-workspace\nVersion: 1.1.0\n"
+            "Metadata-Version: 2.1\nName: cortex-collaborative-workspace\nVersion: 1.1.1\n"
             "Summary: Explicit Collaborative Workspace and Agent Workbench runtime for Cortex\n"
             "Requires-Python: >=3.11,<3.12\n\n"
         ).encode()),
@@ -98,8 +98,8 @@ import sys
 import unicodedata
 import zipfile
 
-VERSION = "1.1.0"
-WHEEL = "cortex_collaborative_workspace-1.1.0-py3-none-any.whl"
+VERSION = "1.1.1"
+WHEEL = "cortex_collaborative_workspace-1.1.1-py3-none-any.whl"
 DIGEST = "__DIGEST__"
 BOOTSTRAP_EXIT = 70
 
@@ -141,10 +141,10 @@ def _run() -> int:
         if hashlib.sha256(raw).hexdigest() != DIGEST: raise BootstrapError("wheel_digest_mismatch")
         with zipfile.ZipFile(wheel) as archive:
             names = archive.namelist()
-            metadata_name = "cortex_collaborative_workspace-1.1.0.dist-info/METADATA"
+            metadata_name = "cortex_collaborative_workspace-1.1.1.dist-info/METADATA"
             if len(names) != len(set(names)) or metadata_name not in names: raise BootstrapError("wheel_metadata_invalid")
             metadata = archive.read(metadata_name).decode("utf-8")
-            if "Name: cortex-collaborative-workspace\n" not in metadata or "Version: 1.1.0\n" not in metadata or "Requires-Dist:" in metadata: raise BootstrapError("wheel_metadata_invalid")
+            if "Name: cortex-collaborative-workspace\n" not in metadata or "Version: 1.1.1\n" not in metadata or "Requires-Dist:" in metadata: raise BootstrapError("wheel_metadata_invalid")
             if any(name.endswith("entry_points.txt") for name in names): raise BootstrapError("wheel_entry_point_forbidden")
     except BootstrapError: raise
     except Exception as exc: raise BootstrapError("wheel_invalid") from exc
@@ -153,6 +153,18 @@ def _run() -> int:
     origin = os.path.normcase(os.path.abspath(package.__file__ or "")).replace("\\", "/")
     prefix = os.path.normcase(str(wheel)).replace("\\", "/") + "/cortex_collaborative_workspace/"
     if package.__version__ != VERSION or not origin.startswith(prefix): raise BootstrapError("import_origin_mismatch")
+    core_client = importlib.import_module("cortex_collaborative_workspace.core_runner")
+    for boundary in runner.parents:
+        if boundary.name == "cortex":
+            marker = boundary / "SKILL.md"
+            try:
+                marker_info = marker.lstat()
+            except OSError:
+                break
+            if stat.S_ISREG(marker_info.st_mode) and not stat.S_ISLNK(marker_info.st_mode) and not bool(getattr(marker_info, "st_file_attributes", 0) & 0x400):
+                core_skill = boundary.parent / "anti-entropy-core"
+                core_client.set_default_runner(core_skill / "scripts" / "knowledge_unit_runner.py", core_skill / "SKILL.md")
+            break
     cli = importlib.import_module("cortex_collaborative_workspace.cli")
     return int(cli.main(sys.argv[1:]))
 
@@ -211,7 +223,8 @@ def _prepare(root: Path, expected: dict[str, bytes]) -> Path:
         info = path.lstat()
         if stat.S_ISLNK(info.st_mode) or _is_reparse(info):
             raise RuntimeError("linked runtime artifact")
-        if stat.S_ISREG(info.st_mode) and relative not in allowed:
+        generated_wheel = relative.startswith("vendor/cortex_collaborative_workspace-") and relative.endswith("-py3-none-any.whl")
+        if stat.S_ISREG(info.st_mode) and relative not in allowed and not generated_wheel:
             raise RuntimeError("unexpected runtime artifact")
         if stat.S_ISDIR(info.st_mode) and relative not in {"vendor"}:
             raise RuntimeError("unexpected runtime directory")
@@ -235,10 +248,15 @@ def main() -> int:
     _check_router(root)
     target = _prepare(root, expected)
     if not args.check:
+        for stale in (target / "vendor").glob("cortex_collaborative_workspace-*-py3-none-any.whl"):
+            if stale.name != WHEEL_NAME:
+                stale.unlink()
         for relative, raw in expected.items():
             path = target / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(raw)
+    if sorted(path.name for path in (target / "vendor").glob("*.whl")) != [WHEEL_NAME]:
+        raise RuntimeError("unexpected runtime artifact")
     actual = {relative: (target / relative).read_bytes() for relative in expected}
     if actual != expected:
         raise RuntimeError("Collaborative Workspace skill runtime drift")

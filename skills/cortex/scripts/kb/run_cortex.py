@@ -14,10 +14,10 @@ import unicodedata
 import zipfile
 
 
-EXPECTED_VERSION = "8.1.0"
+EXPECTED_VERSION = "8.1.1"
 EXPECTED_DISTRIBUTION = "cortex-record-kb"
-EXPECTED_WHEEL_FILENAME = "cortex_record_kb-8.1.0-py3-none-any.whl"
-EXPECTED_WHEEL_SHA256 = "53965e2e3757e27fe665d59b34e91394658673500497343db97936516ffe7e6e"
+EXPECTED_WHEEL_FILENAME = "cortex_record_kb-8.1.1-py3-none-any.whl"
+EXPECTED_WHEEL_SHA256 = "a839e0834247d7db00551279ddd9126af9a73a56c67a78e26d3b8b51aef037c3"
 EXPECTED_MANIFEST_KEYS = {
     "schema_version", "distribution", "import", "version", "wheel",
     "wheel_sha256", "python", "isolation",
@@ -82,7 +82,7 @@ def _load_manifest(path: Path) -> dict[str, object]:
 
 
 def _verify_archive(path: Path) -> None:
-    metadata_name = "cortex_record_kb-8.1.0.dist-info/METADATA"
+    metadata_name = "cortex_record_kb-8.1.1.dist-info/METADATA"
     try:
         with zipfile.ZipFile(path, "r") as archive:
             names = archive.namelist()
@@ -151,6 +151,18 @@ def _run() -> int:
     package = importlib.import_module("cortex")
     if getattr(package, "__version__", None) != EXPECTED_VERSION or not _module_is_from_wheel(package, wheel):
         raise BootstrapError("import_origin_mismatch")
+    core_client = importlib.import_module("cortex.core_runner")
+    for boundary in runner.parents:
+        if boundary.name == "cortex":
+            marker = boundary / "SKILL.md"
+            try:
+                marker_info = marker.lstat()
+            except OSError:
+                break
+            if stat.S_ISREG(marker_info.st_mode) and not stat.S_ISLNK(marker_info.st_mode) and not bool(getattr(marker_info, "st_file_attributes", 0) & 0x400):
+                core_skill = boundary.parent / "anti-entropy-core"
+                core_client.set_default_runner(core_skill / "scripts" / "knowledge_unit_runner.py", core_skill / "SKILL.md")
+            break
     cli = importlib.import_module("cortex.cli")
     if not _module_is_from_wheel(cli, wheel):
         raise BootstrapError("import_origin_mismatch")

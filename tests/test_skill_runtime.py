@@ -21,7 +21,7 @@ SKILL_NAMES = (
 )
 BATCH_SKILL_NAMES = ("cortex-kb-ingest",)
 NON_BATCH_SKILL_NAMES = tuple(name for name in SKILL_NAMES if name not in BATCH_SKILL_NAMES)
-WHEEL_NAME = "cortex_record_kb-8.1.0-py3-none-any.whl"
+WHEEL_NAME = "cortex_record_kb-8.1.1-py3-none-any.whl"
 PAYLOAD_PATHS = (
     Path("run_cortex.py"),
     Path("run_cortex.cmd"),
@@ -29,7 +29,7 @@ PAYLOAD_PATHS = (
     Path("vendor") / WHEEL_NAME,
 )
 RUNTIME_SCENARIOS = {
-    "runtime-sc001": "Each of three KB skill copies runs Cortex 8.1.0 with the explicitly configured external Core runner.",
+    "runtime-sc001": "Each of three KB skill copies runs Cortex 8.1.1 with the explicitly configured external Core runner.",
     "runtime-sc002": "All three KB skills carry byte-identical runner, manifest, and wheel payloads.",
     "runtime-sc003": "PATH Cortex 4 sentinels are never invoked.",
     "runtime-sc004": "Hostile PYTHONPATH and ambient Cortex modules are ignored by isolated launch.",
@@ -42,7 +42,7 @@ RUNTIME_SCENARIOS = {
     "runtime-sc011": "The Cortex 8 public routes, package version, and source CLI contract remain closed.",
     "runtime-sc012": "Source and all three bundled KB runtimes produce equal Results and disposable Bundle trees.",
     "runtime-sc013": "Skills, documentation, capability fixture, and runtime scenario mapping agree.",
-    "runtime-sc014": "CORTEX_PYTHON binds the exact Python 3.11/UCD 14 executable, and non-init routes require an explicit absolute ANTI_ENTROPY_CORE_RUNNER; invalid configuration fails before mutation.",
+    "runtime-sc014": "CORTEX_PYTHON binds the exact Python 3.11/UCD 14 executable, and non-init routes bind the sibling anti-entropy-core skill or an explicit absolute ANTI_ENTROPY_CORE_RUNNER; invalid configuration fails before mutation.",
     "runtime-sc015": "Human stdout and stderr are UTF-8 while compact JSON Result bytes retain ASCII escaping and shape.",
     "runtime-sc016": "The ingest skill helper accepts full and Markdown-only items and returns one ordered wrapper summary; manage and build have none.",
     "runtime-sc017": "The ingest helper collects a valid middle Cortex failure and continues later batch items sequentially.",
@@ -97,7 +97,7 @@ def test_runtime_sc001_independent_complete_skill_copies(tmp_path: Path) -> None
         copied = _copy_skill(tmp_path, name)
         result = _runner(copied, "--version")
         assert result.returncode == 0
-        assert result.stdout == "cortex 8.1.0\n" and result.stderr == ""
+        assert result.stdout == "cortex 8.1.1\n" and result.stderr == ""
         shutil.rmtree(copied)
 
 
@@ -120,7 +120,7 @@ def test_runtime_sc003_path_cortex4_sentinel_is_never_used(tmp_path: Path) -> No
     env = dict(os.environ)
     env["PATH"] = str(sentinel) + os.pathsep + env.get("PATH", "")
     result = _runner(_skill("cortex-kb-ingest"), "--version", env=env)
-    assert result.returncode == 0 and result.stdout == "cortex 8.1.0\n" and result.stderr == ""
+    assert result.returncode == 0 and result.stdout == "cortex 8.1.1\n" and result.stderr == ""
     assert not marker.exists()
 
 
@@ -139,7 +139,7 @@ def test_runtime_sc004_hostile_pythonpath_and_ambient_module_are_ignored(tmp_pat
     env = dict(os.environ)
     env["PYTHONPATH"] = str(hostile)
     result = _runner(_skill("cortex-kb-manage"), "--version", env=env)
-    assert result.returncode == 0 and result.stdout == "cortex 8.1.0\n" and result.stderr == ""
+    assert result.returncode == 0 and result.stdout == "cortex 8.1.1\n" and result.stderr == ""
     assert not marker.exists()
 
 
@@ -282,8 +282,8 @@ def test_runtime_sc009_wheel_metadata_has_no_dependencies_or_command() -> None:
     wheel = _skill("cortex-kb-ingest") / "vendor" / WHEEL_NAME
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
-        metadata = archive.read("cortex_record_kb-8.1.0.dist-info/METADATA").decode("utf-8")
-    assert "Name: cortex-record-kb\n" in metadata and "Version: 8.1.0\n" in metadata
+        metadata = archive.read("cortex_record_kb-8.1.1.dist-info/METADATA").decode("utf-8")
+    assert "Name: cortex-record-kb\n" in metadata and "Version: 8.1.1\n" in metadata
     assert "Requires-Dist:" not in metadata
     assert not any(name.endswith("entry_points.txt") for name in names)
     pyproject = (ROOT / "pyproject.toml").read_text("utf-8")
@@ -301,7 +301,7 @@ def test_runtime_sc010_disposable_projection_has_no_launcher(tmp_path: Path) -> 
 
 
 def test_runtime_sc011_source_contract_is_unchanged() -> None:
-    assert VERSION == "8.1.0"
+    assert VERSION == "8.1.1"
     assert tuple(PUBLIC_ROUTES) == (
         "align.plan", "align.apply",
         "registry.show", "registry.validate", "registry.resolve", "registry.set",
@@ -352,12 +352,12 @@ def test_runtime_sc012_source_and_bundles_have_equal_results_and_trees(tmp_path:
 def test_runtime_sc013_surfaces_and_exact_mapping_agree() -> None:
     fixture = json.loads((ROOT / "fixtures" / "capabilities" / "cortex7-surface.json").read_text("utf-8"))
     assert fixture["global_command"] is False
-    assert fixture["agent_entrypoint"] == "CORTEX_PYTHON absolute-python-3.11-ucd14 -I skill-local-runner; ANTI_ENTROPY_CORE_RUNNER absolute-core-runner"
+    assert fixture["agent_entrypoint"] == "CORTEX_PYTHON absolute-python-3.11-ucd14 -I skill-local-runner; anti-entropy-core sibling skill or explicit ANTI_ENTROPY_CORE_RUNNER"
     assert fixture["skill_runtime"] == {
         "adapter": "skills/cortex/scripts/kb",
         "artifact": WHEEL_NAME,
         "offline": True,
-        "required_environment": ["CORTEX_PYTHON", "ANTI_ENTROPY_CORE_RUNNER"],
+        "required_environment": ["CORTEX_PYTHON"],
         "human_stream_encoding": "utf-8",
         "json_ascii_escaping": True,
         "windows_launcher": "run_cortex.cmd",
@@ -375,7 +375,7 @@ def test_runtime_sc013_surfaces_and_exact_mapping_agree() -> None:
             "skills/cortex/references/kb-build.md", "skills/cortex/references/kb-manage.md",
         )
     )
-    for required in ("CORTEX_PYTHON", "-I", "skill-local", "8.1.0", "complete", "global", "UTF-8"):
+    for required in ("CORTEX_PYTHON", "-I", "skill-local", "8.1.1", "complete", "global", "UTF-8"):
         assert required in combined
     matrix = (ROOT / "docs" / "verification-matrix.md").read_text("utf-8")
     actual: dict[str, str] = {}
@@ -421,9 +421,19 @@ def test_runtime_sc014_python312_fails_before_mutation_when_available(tmp_path: 
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
         candidates.append(str(Path(local_app_data) / "Programs" / "Python" / "Python312" / "python.exe"))
-    python312 = next((Path(value) for value in candidates if value and Path(value).is_file()), None)
+    python312 = None
+    inaccessible = []
+    for value in candidates:
+        if not value:
+            continue
+        try:
+            if Path(value).is_file():
+                python312 = Path(value)
+                break
+        except PermissionError:
+            inaccessible.append(value)
     if python312 is None:
-        pytest.skip("Python 3.12 is unavailable")
+        pytest.skip("Python 3.12 is unavailable" + ("; current token cannot access: " + ", ".join(inaccessible) if inaccessible else ""))
     workspace = tmp_path / "must-not-exist"
     env = dict(os.environ)
     env["CORTEX_PYTHON"] = str(python312.absolute())
@@ -634,7 +644,7 @@ def test_runtime_sc018_invalid_job_rejects_before_runner_or_mutation(
 def test_runtime_sc019_populated_tag_expansion_preserves_layout_and_defers_partition(tmp_path: Path) -> None:
     env = dict(os.environ)
     env["ANTI_ENTROPY_CORE_RUNNER"] = str(
-        (ROOT.parent / "anti-entropy-core" / "scripts" / "knowledge_unit_runner.py").resolve()
+        os.environ["CORTEX_REAL_CORE_RUNNER"]
     )
     bundle = _configure_bundle_for_runtime(tmp_path, env=env)
     first_source = tmp_path / "first.md"
@@ -662,7 +672,7 @@ def test_runtime_sc019_populated_tag_expansion_preserves_layout_and_defers_parti
     one = _runner(
         _skill("cortex-kb-manage"), "--json", "--workspace", str(bundle), "manage", "validate", env=env,
     )
-    assert json.loads(one.stdout)["data"] == {"version": "8.1.0", "valid": True, "count": 1}
+    assert json.loads(one.stdout)["data"] == {"version": "8.1.1", "valid": True, "count": 1}
 
     second_source = tmp_path / "second.md"
     second_source.write_bytes(b"# second\n")
@@ -680,4 +690,4 @@ def test_runtime_sc019_populated_tag_expansion_preserves_layout_and_defers_parti
     two = _runner(
         _skill("cortex-kb-manage"), "--json", "--workspace", str(bundle), "manage", "validate", env=env,
     )
-    assert json.loads(two.stdout)["data"] == {"version": "8.1.0", "valid": True, "count": 2}
+    assert json.loads(two.stdout)["data"] == {"version": "8.1.1", "valid": True, "count": 2}

@@ -25,5 +25,5 @@ for raw in sys.stdin.buffer:
             if not any(support.iterdir()): (support / ".keep").write_bytes(b"")
     problems = [{"code": "fake_core_rejected", "message": "Injected fake Core rejection"}] if fail or invalid else []
     result = {"status": "validation_error" if problems else "ok", "abi": "anti-entropy-core.runner/v1",
-              "command": command, "exit_code": 3 if problems else 0, "issues": problems, "data": {}}
+              "command": command, "exit_code": 3 if problems else 0, "issues": problems, "data": {"version": "1.2.1"} if command == "capabilities" else {}}
     sys.stdout.write(json.dumps(result, separators=(",", ":")) + "\n"); sys.stdout.flush()

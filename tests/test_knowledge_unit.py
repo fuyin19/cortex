@@ -57,14 +57,16 @@ def _calls(log: Path) -> list[dict]:
     return [] if not log.exists() else [json.loads(line) for line in log.read_text("utf-8").splitlines()]
 
 
-def test_explicit_runner_has_no_handshake_and_stage_complete_is_called_once(tmp_path, capsys, explicit_core_runner):
+def test_explicit_runner_has_one_handshake_and_stage_complete_is_called_once(tmp_path, capsys, explicit_core_runner):
     bundle = _bundle(tmp_path, capsys)
+    explicit_core_runner.unlink(missing_ok=True)
     source = tmp_path / "memo.md"
     source.write_bytes(b"memo")
     code, result = _invoke(capsys, "--workspace", str(bundle), "record", "add", "--source", str(source), "--metadata", str(_metadata(tmp_path, "Source")))
     assert code == 0 and (_unit(bundle, result) / "memo.md").read_bytes() == b"memo"
     calls = _calls(explicit_core_runner)
-    assert not any(item["command"] == "capabilities" for item in calls)
+    assert calls[0]["command"] == "capabilities"
+    assert sum(item["command"] == "capabilities" for item in calls) == 1
     completed = [item for item in calls if item["command"] == "stage.complete"]
     assert len(completed) == 1
     assert completed[0]["request"]["private_root_files"] == ["record.json"]
@@ -123,9 +125,8 @@ def test_core_runner_rejects_noncanonical_results(tmp_path, payload):
         f"print(json.dumps({payload!r}))\n",
         encoding="utf-8",
     )
-    runner = CoreRunner(runner_path)
     with pytest.raises(Exception) as exc_info:
-        runner.inspect(tmp_path)
+        CoreRunner(runner_path).inspect(tmp_path)
     assert getattr(exc_info.value, "code", None) == "core_protocol_error"
 
 
@@ -175,7 +176,6 @@ def test_align_plan_apply_and_stale_fixture(tmp_path, capsys):
     assert code == 3 and stale["issues"][0]["code"] == "stale_align_plan"
 
 
-@pytest.mark.skipif(REAL_CORE_RUNNER is None, reason="set CORTEX_REAL_CORE_RUNNER for cross-repo integration")
 def test_real_core_runner_stage_complete_and_validate(tmp_path, monkeypatch):
     assert REAL_CORE_RUNNER is not None
     monkeypatch.setenv("ANTI_ENTROPY_CORE_RUNNER", REAL_CORE_RUNNER)

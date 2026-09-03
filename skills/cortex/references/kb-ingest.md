@@ -7,11 +7,9 @@ Use this skill only for `record.add` and the skill-local exact-v1/v2 batch wrapp
 
 ## Verified offline runtime
 
-Set `CORTEX_PYTHON` to the lexical absolute path of the intended Python 3.11/UCD 14 executable. The launcher verifies that path is an ordinary non-reparse file reached through ordinary non-reparse ancestors and is the same filesystem entry as `sys.executable`. On POSIX invoke `"$CORTEX_PYTHON" -I <ABSOLUTE-CORTEX-SKILL>/scripts/kb/run_cortex.py`; on Windows use the identical convenience launcher `<ABSOLUTE-CORTEX-SKILL>\scripts\kb\run_cortex.cmd`. First require `--version` to emit exactly `cortex 8.1.0` on stdout and empty stderr. Do not use PATH or fall back to a global command, ambient package, installation, another skill, network, or update.
+Set `CORTEX_PYTHON` to the lexical absolute path of the intended Python 3.11/UCD 14 executable. The launcher verifies that path is an ordinary non-reparse file reached through ordinary non-reparse ancestors and is the same filesystem entry as `sys.executable`. On POSIX invoke `"$CORTEX_PYTHON" -I <ABSOLUTE-CORTEX-SKILL>/scripts/kb/run_cortex.py`; on Windows use the identical convenience launcher `<ABSOLUTE-CORTEX-SKILL>\scripts\kb\run_cortex.cmd`. First require `--version` to emit exactly `cortex 8.1.1` on stdout and empty stderr. Do not use PATH or fall back to a global command, ambient package, installation, another skill, network, or update.
 
-Also set `ANTI_ENTROPY_CORE_RUNNER` to the absolute path to
-`anti-entropy-core/scripts/knowledge_unit_runner.py`. Every ingest operation
-uses that runner for the base Envelope and has no local fallback.
+The installed launcher binds the sibling `anti-entropy-core` skill at `<cortex-skill-parent>/anti-entropy-core/scripts/knowledge_unit_runner.py`. An explicit `ANTI_ENTROPY_CORE_RUNNER` absolute path overrides that default; a present empty, relative, missing, linked/reparse, or nonregular value fails without fallback. Core-dependent operations preflight ABI `anti-entropy-core.runner/v1` and exact Core version `1.2.1` within 30 seconds before business writes, then retain that runner for the operation. Update Core and the consumer to their matching releases if this check fails. Direct source/library use requires the explicit runner setting; it does not infer installation roots.
 
 Require explicit `--workspace`, or explicit `--kb-root` plus `--bundle-id`. Inspect Record 1, Tag 2, and Layout 5. Require nonnull `partition_tag_group`, `partition_name_strategy: tag`, `unit_name_strategy: tag-title-date`, `duplicate_name_strategy: reject`, and exactly one record tag in the partition group. Never infer or add tags.
 

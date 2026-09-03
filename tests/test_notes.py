@@ -366,4 +366,4 @@ def test_notes_surface_is_closed_and_kb_runtime_sources_remain_separate() -> Non
     for forbidden in ("import sqlite", "import requests", "import socket"):
         assert forbidden not in combined
     assert not any("cortex_notes" in path.read_text("utf-8") for path in (ROOT / "src/cortex").glob("*.py"))
-    assert json.loads((ROOT / "package.json").read_text("utf-8"))["version"] == "8.1.0"
+    assert json.loads((ROOT / "package.json").read_text("utf-8"))["version"] == "8.1.1"

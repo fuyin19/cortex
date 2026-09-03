@@ -21,7 +21,7 @@ from cortex.profiles import registered_tags, tag_groups, validate_record, valida
 from cortex.registry import canonical_registry, validate_registry_value  # noqa: E402
 from cortex.validation import validate_workspace  # noqa: E402
 
-if VERSION != "8.1.0": raise RuntimeError(f"Layout migration requires repository Cortex 8.1.0, found {VERSION}")
+if VERSION != "8.1.1": raise RuntimeError(f"Layout migration requires repository Cortex 8.1.1, found {VERSION}")
 LEGACY_KEYS = {"version", "unit_name_tag_group", "unit_name_strategy", "max_component_length", "duplicate_name_strategy"}
 TARGET_KEYS = {"version", "partition_tag_group", "partition_name_strategy", "unit_name_strategy", "max_component_length", "duplicate_name_strategy"}
 

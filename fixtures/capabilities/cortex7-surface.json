@@ -1,24 +1,69 @@
 {
   "distribution": "cortex-record-kb",
   "import": "cortex",
-  "version": "8.1.0",
-  "routes": ["align.plan", "align.apply", "registry.show", "registry.validate", "registry.resolve", "registry.set", "manage.init", "manage.status", "manage.validate", "manage.config.show", "manage.config.set", "record.add", "record.edit", "record.show", "record.delete"],
-  "profiles": ["record-schema.json", "tags.json", "layout.json"],
-  "profile_versions": {"record": 1, "tag": 2, "layout": 5, "registry": [1, 2]},
+  "version": "8.1.1",
+  "routes": [
+    "align.plan",
+    "align.apply",
+    "registry.show",
+    "registry.validate",
+    "registry.resolve",
+    "registry.set",
+    "manage.init",
+    "manage.status",
+    "manage.validate",
+    "manage.config.show",
+    "manage.config.set",
+    "record.add",
+    "record.edit",
+    "record.show",
+    "record.delete"
+  ],
+  "profiles": [
+    "record-schema.json",
+    "tags.json",
+    "layout.json"
+  ],
+  "profile_versions": {
+    "record": 1,
+    "tag": 2,
+    "layout": 5,
+    "registry": [
+      1,
+      2
+    ]
+  },
   "registry_identity": "cortex-kb-registry/v2",
   "partition_name_strategy": "tag",
   "unit_name_strategy": "tag-title-date",
-  "record_operand": {"partition": "<exact-partition-tag>", "record": "<exact-unit-name>"},
+  "record_operand": {
+    "partition": "<exact-partition-tag>",
+    "record": "<exact-unit-name>"
+  },
   "tree_digest": "CORTEX_UNIT_TREE_V2",
   "delete_precondition": "expected-tree-sha256",
   "public_migration_route": false,
-  "agent_entrypoint": "CORTEX_PYTHON absolute-python-3.11-ucd14 -I skill-local-runner; ANTI_ENTROPY_CORE_RUNNER absolute-core-runner",
+  "agent_entrypoint": "CORTEX_PYTHON absolute-python-3.11-ucd14 -I skill-local-runner; anti-entropy-core sibling skill or explicit ANTI_ENTROPY_CORE_RUNNER",
   "global_command": false,
-  "build_profile_policy": {"tag_transition": "keyed-monotonic-append", "description_edits": true, "populated_layout": "byte-identical"},
+  "build_profile_policy": {
+    "tag_transition": "keyed-monotonic-append",
+    "description_edits": true,
+    "populated_layout": "byte-identical"
+  },
   "skill_taxonomy": {
     "router": "cortex",
-    "exposed_skills": ["cortex"],
-    "internal_roles": ["kb.ingest", "kb.build", "kb.manage", "notes.ingest", "notes.build", "notes.manage", "collaborative-workspace"],
+    "exposed_skills": [
+      "cortex"
+    ],
+    "internal_roles": [
+      "kb.ingest",
+      "kb.build",
+      "kb.manage",
+      "notes.ingest",
+      "notes.build",
+      "notes.manage",
+      "collaborative-workspace"
+    ],
     "write_owners": {
       "align.apply": "kb.manage",
       "manage.init": "kb.build",
@@ -36,6 +81,35 @@
     "router_runtime": true,
     "enforcement": "skill-contract-only"
   },
-  "skill_runtime": {"adapter": "skills/cortex/scripts/kb", "artifact": "cortex_record_kb-8.1.0-py3-none-any.whl", "offline": true, "required_environment": ["CORTEX_PYTHON", "ANTI_ENTROPY_CORE_RUNNER"], "human_stream_encoding": "utf-8", "json_ascii_escaping": true, "windows_launcher": "run_cortex.cmd"},
-  "batch_helper": {"role": "kb.ingest", "adapter": "skills/cortex/scripts/kb", "script": "batch_record_add.py", "schema_version": 1, "command": "record.add.batch", "core_route": false, "sequential": true, "rollback": false}
+  "skill_runtime": {
+    "adapter": "skills/cortex/scripts/kb",
+    "artifact": "cortex_record_kb-8.1.1-py3-none-any.whl",
+    "offline": true,
+    "required_environment": [
+      "CORTEX_PYTHON"
+    ],
+    "human_stream_encoding": "utf-8",
+    "json_ascii_escaping": true,
+    "windows_launcher": "run_cortex.cmd"
+  },
+  "batch_helper": {
+    "role": "kb.ingest",
+    "adapter": "skills/cortex/scripts/kb",
+    "script": "batch_record_add.py",
+    "schema_version": 1,
+    "command": "record.add.batch",
+    "core_route": false,
+    "sequential": true,
+    "rollback": false
+  },
+  "core_binding": {
+    "skill_id": "anti-entropy-core",
+    "default": "<cortex-skill-parent>/anti-entropy-core/scripts/knowledge_unit_runner.py",
+    "override": "ANTI_ENTROPY_CORE_RUNNER",
+    "override_present_invalid": "fail-closed",
+    "abi": "anti-entropy-core.runner/v1",
+    "exact_version": "1.2.1",
+    "preflight_timeout_seconds": 30,
+    "operation_scope": "one fixed runner; converter subprocesses receive the same path"
+  }
 }

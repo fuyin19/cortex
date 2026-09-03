@@ -324,6 +324,7 @@ class CortexService:
         if self._active_mutation_report is not None:
             yield self._active_mutation_report
             return
+        self._core()
         lock_path = self._lock_path()
         if self.kb_root is None:
             assert self.workspace is not None

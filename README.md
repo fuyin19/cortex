@@ -1,6 +1,6 @@
-# Cortex Record KB 8.0
+# Cortex Record KB 8.1.1
 
-Cortex 8.1.0 is a small, single-writer record KB using Record 1, Tag 2, Layout 5, and exact Registry v1 or identity-bearing `cortex-kb-registry/v2`. New Registry roots use v2; ordinary operations do not migrate v1. A Bundle contains `profiles/` and nonempty tag-named partitions; each partition directly contains canonical record units. Layout 3 and Layout 4 are rejected by normal runtime operation.
+Cortex 8.1.1 is a small, single-writer record KB using Record 1, Tag 2, Layout 5, and exact Registry v1 or identity-bearing `cortex-kb-registry/v2`. New Registry roots use v2; ordinary operations do not migrate v1. A Bundle contains `profiles/` and nonempty tag-named partitions; each partition directly contains canonical record units. Layout 3 and Layout 4 are rejected by normal runtime operation.
 
 Layout 5 uses `partition_tag_group`, exact `partition_name_strategy: tag`, `unit_name_strategy: tag-title-date`, component limit 16..200, and duplicate rejection. Each record has Cortex-private `record.json` plus the base envelope owned by anti-entropy Core. Cortex retains record/profile/naming rules but does not vendor or fall back to a local envelope implementation. An empty Bundle may temporarily have a null group; add requires exactly one selected tag and derives both `<partition>/<tag-title-date-unit>` without new naming arguments.
 
@@ -8,14 +8,15 @@ Record edit/show/delete require separate exact operands:
 
 ```text
 export CORTEX_PYTHON=/absolute/path/to/python3.11
-export ANTI_ENTROPY_CORE_RUNNER=/absolute/path/to/knowledge_unit_runner.py
+# Optional override for a Core skill installed under another root:
+# export ANTI_ENTROPY_CORE_RUNNER=/absolute/path/to/knowledge_unit_runner.py
 "$CORTEX_PYTHON" -I <CORTEX-SKILL>/scripts/kb/run_cortex.py --json --workspace <bundle> record show --partition <tag> --record <unit>
 "$CORTEX_PYTHON" -I <CORTEX-SKILL>/scripts/kb/run_cortex.py --json --workspace <bundle> record delete --partition <tag> --record <unit> --expected-tree-sha256 <lowercase64>
 ```
 
-`CORTEX_PYTHON` is mandatory and must name the same ordinary, non-reparse Python 3.11/UCD 14 executable that runs the skill-local launcher. `ANTI_ENTROPY_CORE_RUNNER` is also mandatory for every non-init Cortex command and must be an explicit absolute path; Cortex launches it as `[sys.executable, "-I", runner]` with one JSONL request and has no local or implicit-discovery fallback. Windows may invoke the byte-identical `scripts\run_cortex.cmd` convenience launcher after setting the same variables. There is no PATH, install, network, or alternate-runtime fallback. Human stdout/stderr is UTF-8; `--json` retains the existing compact ASCII-escaped Result encoding.
+`CORTEX_PYTHON` is mandatory and must name the same ordinary, non-reparse Python 3.11/UCD 14 executable that runs the skill-local launcher. The installed launcher binds the sibling `anti-entropy-core` skill at `<cortex-skill-parent>/anti-entropy-core/scripts/knowledge_unit_runner.py`. An explicit `ANTI_ENTROPY_CORE_RUNNER` absolute path overrides that default; a present empty, relative, missing, linked/reparse, or nonregular value fails without fallback. Core-dependent operations preflight ABI `anti-entropy-core.runner/v1` and exact Core version `1.2.1` within 30 seconds before business writes, then retain that runner for the operation. Update Core and the consumer to their matching releases if this check fails. Direct source/library use requires the explicit runner setting; it does not infer installation roots. Windows may invoke the byte-identical `scripts\kb\run_cortex.cmd` convenience launcher after setting the same variables. There is no PATH, install, network, or alternate-runtime fallback. Human stdout/stderr is UTF-8; `--json` retains the existing compact ASCII-escaped Result encoding.
 
-The explicit-only skill taxonomy separates responsibilities without changing the KB CLI. The instruction-only `cortex` router selects exactly one canonical skill and packages no runtime:
+The explicit-only skill taxonomy separates responsibilities without changing the KB CLI. The `cortex` skill selects exactly one internal role and carries three private runtime adapters:
 
 - Internal role `kb.ingest` owns `record.add` and the sequential batch wrapper, preserving exact v1 syntax and adding exact v2 source/conversion/both syntax.
 - Internal role `kb.build` owns `manage.init`, `manage.config.set`, and `registry.set` only. It requires one explicit active build session and keyed-monotonic profile/Registry expansion.
@@ -23,9 +24,7 @@ The explicit-only skill taxonomy separates responsibilities without changing the
   plus exact `record.show`, `record.edit`, and `record.delete` only. Alignment
   applies only Core-supported Envelope repair and creates no recovery system.
 
-Every canonical KB skill embeds the same Cortex 8 wheel and requires the same
-explicit external Core runner for non-init work; ownership is enforced by the
-skill contract, not by removing CLI routes.
+All KB roles use the same private Cortex 8.1.1 wheel and one selected Core runner for non-init work; ownership is enforced by the skill contract, not by removing CLI routes.
 
 ### Collaborative Workspace 1.1
 
@@ -48,7 +47,7 @@ The internal `collaborative-workspace` role uses its own deterministic offline a
     └── output/
 ```
 
-Invoke `scripts/run_collaborative_workspace.py --json prepare|status|validate --root <absolute-root>` through the exact `CORTEX_PYTHON` binding. Prepare alone also accepts repeatable `--outdate <relative-source-path>`. `ANTI_ENTROPY_CORE_RUNNER` is mandatory. Prepare additionally requires explicit absolute `FILE_CONVERSION_RUNNER`/`FILE_CONVERSION_CONFIG` and/or `MARKDOWN_CONVERSION_RUNNER`/`MARKDOWN_CONVERSION_CONFIG` when those source routes are present. There is no provider lookup or fallback.
+Invoke `scripts/collaborative-workspace/run_collaborative_workspace.py --json prepare|status|validate --root <absolute-root>` through the exact `CORTEX_PYTHON` binding. Prepare alone also accepts repeatable `--outdate <relative-source-path>`. Core uses the same sibling-skill default, explicit override, and exact version preflight described above. Every converter receives this operation's fixed runner through `ANTI_ENTROPY_CORE_RUNNER`. Prepare additionally requires explicit absolute `FILE_CONVERSION_RUNNER`/`FILE_CONVERSION_CONFIG` and/or `MARKDOWN_CONVERSION_RUNNER`/`MARKDOWN_CONVERSION_CONFIG` when those source routes are present. There is no provider lookup or fallback.
 
 Outer `ref/` is human-owned; its required `_outdated/` subtree is excluded from active projection. Prepare otherwise changes outer reference data only for an explicit `--outdate`. Missing or changed sources automatically archive their former prepared KUs in the inner generation history. Nonempty `temp/` returns busy, while `output/` and safe extras are preserved. The runtime does not expose sync, duplicate inference, delete, clean, rebuild, watch, queue, recovery, automatic KB/Notes ingest, or output promotion. See `docs/collaborative-workspace-architecture.md`.
 
@@ -63,3 +62,7 @@ Internal role `kb.build` classifies one explicit target as new, resumed empty co
 Show/delete authorization uses `CORTEX_UNIT_TREE_V2`, which binds partition then unit before the no-follow manifest. Deleting the last unit removes its partition. Registered mutations and authorization share the stable root lock; standalone operations use the Record Profile byte lock.
 
 `tools/migrate_layout.py` is the sole noninstalled, nonpublic migration dispatcher. It preserves source-read-only Layout 3 → Layout 4 plan/build and adds source-read-only Layout 4 → Layout 5 plan/build outside the KB and repository roots on the same volume. Build requires the exact initialized Registry 1 KB root, its derived repository boundary, and the explicit Core runner; omitted or false boundary operands fail closed. It has no cutover command. Core completes the Layout 4 → 5 candidate envelope.
+
+Core distribution and binding are closed for Core 1.2.1. This release does not repair the conversion skills' other `_shared`/sibling runtime dependencies or claim a fully standalone file-conversion or AC26 prepare fix. Converter runner/config bindings remain explicit. Tests use synthetic stages and controlled providers; real provider conversion is outside this gate.
+
+For the regression gate, set `CORTEX_REAL_CORE_RUNNER` to the actual Core Candidate runner before `python -m pytest`; the real-Core integration tests fail if it is absent rather than skipping.

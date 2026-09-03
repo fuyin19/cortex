@@ -43,7 +43,7 @@ Repository boundary vocabulary: candidate under KB root; candidate under source 
 
 | Runtime scenario | Frozen semantic |
 |---|---|
-| runtime-sc001 | Each of three KB skill copies runs Cortex 8.1.0 with the explicitly configured external Core runner. |
+| runtime-sc001 | Each of three KB skill copies runs Cortex 8.1.1 with the explicitly configured external Core runner. |
 | runtime-sc002 | All three KB skills carry byte-identical runner, manifest, and wheel payloads. |
 | runtime-sc003 | PATH Cortex 4 sentinels are never invoked. |
 | runtime-sc004 | Hostile PYTHONPATH and ambient Cortex modules are ignored by isolated launch. |
@@ -56,7 +56,7 @@ Repository boundary vocabulary: candidate under KB root; candidate under source 
 | runtime-sc011 | The Cortex 8 public routes, package version, and source CLI contract remain closed. |
 | runtime-sc012 | Source and all three bundled KB runtimes produce equal Results and disposable Bundle trees. |
 | runtime-sc013 | Skills, documentation, capability fixture, and runtime scenario mapping agree. |
-| runtime-sc014 | CORTEX_PYTHON binds the exact Python 3.11/UCD 14 executable, and non-init routes require an explicit absolute ANTI_ENTROPY_CORE_RUNNER; invalid configuration fails before mutation. |
+| runtime-sc014 | CORTEX_PYTHON binds the exact Python 3.11/UCD 14 executable, and non-init routes bind the sibling anti-entropy-core skill or an explicit absolute ANTI_ENTROPY_CORE_RUNNER; invalid configuration fails before mutation. |
 | runtime-sc015 | Human stdout and stderr are UTF-8 while compact JSON Result bytes retain ASCII escaping and shape. |
 | runtime-sc016 | The ingest skill helper accepts full and Markdown-only items and returns one ordered wrapper summary; manage and build have none. |
 | runtime-sc017 | The ingest helper collects a valid middle Cortex failure and continues later batch items sequentially. |
@@ -91,3 +91,19 @@ Repository boundary vocabulary: candidate under KB root; candidate under source 
 | notes-sc012 | Add/show/list/edit/archive/confirmed-delete metadata and digest lifecycle remains unchanged across all three layout fixtures. |
 | notes-sc013 | Three deterministic Notes 2 wheels/manifests are byte-identical and the router is excluded from runtime packaging. |
 | notes-sc014 | The isolated Notes state contains nine canonical profile files, no legacy bundle files, preserved markers/Registry/lock, and zero note units. |
+
+
+Core carrier release gate (`tests/test_core_skill_binding.py`):
+
+| EvalSpec | Evidence |
+| --- | --- |
+| Core sc-002 | Relocated complete Cortex skill launchers bind only the sibling exact Core skill, with unrelated CWD/PATH and import interference. |
+| Core sc-003 | Both installed launchers honor a valid explicit override and never invoke the default runner. |
+| Core sc-004 | Empty, relative, missing, directory, missing-marker and reparse paths fail before business writes with no fallback. |
+| Core sc-005 | Wrong ABI, old/new/missing/invalid versions and malformed Results fail before business writes. |
+| Core sc-006 | One operation preflights once, retains its runner after ambient environment changes, and explicitly passes it to converter subprocesses. A new operation rebinds. |
+| Core sc-007 | Installed consumers use isolated JSONL subprocesses despite hostile import paths; malformed results are rejected. |
+| Core sc-009 | Installed Notes performs registry, Bundle and note writes with absent/broken Core; help/version and KB init remain independent. |
+| Core sc-010 | Exact package versions, deterministic wheels/manifests, fixtures and all three packager checks agree. |
+
+`CORTEX_REAL_CORE_RUNNER` must explicitly name the current Core Candidate. Real-Core integration must not skip. The existing optional producer/provider integration remains outside this Core-only gate unless its separately authorized dependencies are supplied.

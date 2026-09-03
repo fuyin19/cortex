@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -11,11 +12,45 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .errors import CortexError, Status, io_error, usage_error
+from .errors import CortexError, Status, io_error as _io_error, usage_error
 
 
 ABI = "anti-entropy-core.runner/v1"
 RUNNER_ENV = "ANTI_ENTROPY_CORE_RUNNER"
+EXPECTED_CORE_VERSION = "1.2.1"
+_DEFAULT_RUNNER: tuple[Path, Path] | None = None
+
+
+def io_error(message: str, code: str, **details: Any) -> CortexError:
+    diagnostic = {"actual_abi": "unknown", "actual_version": "unknown", "expected_abi": ABI,
+                  "expected_version": EXPECTED_CORE_VERSION,
+                  "remedy": "Check the selected runner and update Core and this consumer to their matching releases",
+                  **details}
+    return _io_error(message, code, **diagnostic)
+
+
+def set_default_runner(runner: Path, skill_marker: Path) -> None:
+    """Receive a lexical default from the actual skill launcher, never infer a wheel root."""
+    global _DEFAULT_RUNNER
+    _DEFAULT_RUNNER = (runner, skill_marker)
+
+
+def _ordinary_chain(path: Path, *, selected_runner: Path | None = None) -> None:
+    for node in reversed((path,) + tuple(path.parents)):
+        try:
+            info = node.lstat()
+        except OSError as exc:
+            raise usage_error("Core path is missing or unreadable; install the matching Core skill or set an absolute runner",
+                              "core_runner_path_invalid", runner=str(selected_runner or path), actual=str(exc),
+                              actual_abi="unknown", actual_version="unknown",
+                              expected_abi=ABI, expected_version=EXPECTED_CORE_VERSION) from exc
+        reparse = bool(getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+        ordinary = stat.S_ISREG(info.st_mode) if node == path else stat.S_ISDIR(info.st_mode)
+        if stat.S_ISLNK(info.st_mode) or reparse or not ordinary:
+            raise usage_error("Core path must be an ordinary file with ordinary ancestors; install the matching Core skill or set an absolute runner",
+                              "core_runner_path_invalid", runner=str(selected_runner or path), actual=str(node), actual_abi="unknown", actual_version="unknown",
+                              expected_abi=ABI, expected_version=EXPECTED_CORE_VERSION)
+
 
 
 @dataclass(frozen=True)
@@ -35,17 +70,31 @@ class CoreResult:
 class CoreRunner:
     """Invoke one explicit absolute runner once for each JSONL request."""
 
-    def __init__(self, runner: str | os.PathLike[str]) -> None:
+    def __init__(self, runner: str | os.PathLike[str], *, skill_marker: Path | None = None) -> None:
         raw = os.fspath(runner)
         candidate = Path(raw)
         if not candidate.is_absolute():
             raise usage_error(
-                "Anti-entropy Core runner must be an explicit absolute path",
-                "core_runner_not_absolute",
-                runner=raw,
+                "Core runner must be an absolute ordinary file; install Core 1.2.1 or set ANTI_ENTROPY_CORE_RUNNER",
+                "core_runner_not_absolute", runner=raw, actual_abi="unknown", actual_version="unknown",
+                expected_abi=ABI, expected_version=EXPECTED_CORE_VERSION,
             )
+        _ordinary_chain(candidate)
+        if skill_marker is not None:
+            _ordinary_chain(skill_marker, selected_runner=candidate)
         self.path = Path(os.path.abspath(candidate))
         self._process: subprocess.Popen[bytes] | None = None
+        result = self._invoke("capabilities", {}, timeout=30, preflight=True)
+        self._raise(result)
+        if result.data.get("version") != EXPECTED_CORE_VERSION:
+            self._version_mismatch(result.abi, result.data.get("version", "unknown"))
+
+    def _version_mismatch(self, actual_abi: object, actual_version: object) -> None:
+        raise usage_error(
+            "Anti-entropy Core ABI/version mismatch; update Core and this consumer to their matching releases",
+            "core_version_mismatch", runner=str(self.path), actual_abi=actual_abi, actual_version=actual_version,
+            expected_abi=ABI, expected_version=EXPECTED_CORE_VERSION,
+        )
 
     @contextmanager
     def session(self):
@@ -73,15 +122,19 @@ class CoreRunner:
 
     @classmethod
     def from_config(cls, runner: str | os.PathLike[str] | None = None) -> "CoreRunner":
-        selected = os.fspath(runner) if runner is not None else os.environ.get(RUNNER_ENV)
-        if not selected:
-            raise usage_error(
-                f"Set {RUNNER_ENV} to the absolute Core runner path",
-                "core_runner_required",
-            )
-        return cls(selected)
+        if runner is not None:
+            return cls(runner)
+        if RUNNER_ENV in os.environ:
+            return cls(os.environ[RUNNER_ENV])
+        if _DEFAULT_RUNNER is not None:
+            return cls(_DEFAULT_RUNNER[0], skill_marker=_DEFAULT_RUNNER[1])
+        raise usage_error(
+            f"Install anti-entropy-core beside cortex or set {RUNNER_ENV} to its absolute runner path",
+            "core_runner_required", actual_abi="unknown", actual_version="unknown",
+            expected_abi=ABI, expected_version=EXPECTED_CORE_VERSION,
+        )
 
-    def _invoke(self, command: str, request: dict[str, Any]) -> CoreResult:
+    def _invoke(self, command: str, request: dict[str, Any], *, timeout: int | None = None, preflight: bool = False) -> CoreResult:
         wire = (
             json.dumps(
                 {"command": command, "request": request},
@@ -107,11 +160,11 @@ class CoreRunner:
                 input=wire,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                check=False,
+                check=False, timeout=timeout,
             )
-        except OSError as exc:
+        except (OSError, subprocess.TimeoutExpired) as exc:
             raise io_error(
-                "Anti-entropy Core runner could not be started",
+                "Anti-entropy Core runner could not be started or timed out",
                 "core_runner_start_failed",
                 path=str(self.path),
                 command=command,
@@ -125,9 +178,9 @@ class CoreRunner:
                 command=command,
                 process_exit_code=completed.returncode,
             )
-        return self._decode_result(command, completed.stdout)
+        return self._decode_result(command, completed.stdout, preflight=preflight)
 
-    def _decode_result(self, command: str, stdout: bytes) -> CoreResult:
+    def _decode_result(self, command: str, stdout: bytes, *, preflight: bool = False) -> CoreResult:
         try:
             payload = json.loads(stdout.decode("utf-8", errors="strict"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -159,7 +212,7 @@ class CoreRunner:
                 path=str(self.path),
                 command=command,
             )
-        if payload["abi"] != ABI or payload["command"] != command:
+        if payload["command"] != command:
             raise io_error(
                 "Anti-entropy Core Result identity does not match the request",
                 "core_protocol_error",
@@ -186,6 +239,14 @@ class CoreRunner:
                 "core_protocol_error",
                 path=str(self.path),
                 command=command,
+            )
+        if payload["abi"] != ABI:
+            if preflight:
+                self._version_mismatch(payload["abi"], payload["data"].get("version", "unknown"))
+            raise io_error(
+                "Anti-entropy Core Result identity does not match the request", "core_protocol_error",
+                path=str(self.path), command=command, actual_abi=payload["abi"],
+                actual_version=payload["data"].get("version", "unknown"),
             )
         return CoreResult(
             abi=payload["abi"],
@@ -249,4 +310,4 @@ def require_core(core: CoreRunner | None) -> CoreRunner:
     return core if core is not None else CoreRunner.from_config()
 
 
-__all__ = ["ABI", "CoreResult", "CoreRunner", "RUNNER_ENV", "require_core"]
+__all__ = ["ABI", "CoreResult", "CoreRunner", "RUNNER_ENV", "EXPECTED_CORE_VERSION", "require_core", "set_default_runner"]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-VERSION = "8.1.0"
+VERSION = "8.1.1"
 DIST_NAME = "cortex-record-kb"
 
 PUBLIC_ROUTES = (

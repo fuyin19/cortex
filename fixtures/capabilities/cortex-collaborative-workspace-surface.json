@@ -1,5 +1,5 @@
 {
-  "version": "1.1.0",
+  "version": "1.1.1",
   "distribution": "cortex-collaborative-workspace",
   "import": "cortex_collaborative_workspace",
   "runner": "run_collaborative_workspace.py",
@@ -22,11 +22,26 @@
     "markdown-conversion"
   ],
   "required_environment": [
-    "CORTEX_PYTHON",
-    "ANTI_ENTROPY_CORE_RUNNER"
+    "CORTEX_PYTHON"
   ],
   "conditional_provider_environment": {
-    "file-conversion": ["FILE_CONVERSION_RUNNER", "FILE_CONVERSION_CONFIG"],
-    "markdown-conversion": ["MARKDOWN_CONVERSION_RUNNER", "MARKDOWN_CONVERSION_CONFIG"]
+    "file-conversion": [
+      "FILE_CONVERSION_RUNNER",
+      "FILE_CONVERSION_CONFIG"
+    ],
+    "markdown-conversion": [
+      "MARKDOWN_CONVERSION_RUNNER",
+      "MARKDOWN_CONVERSION_CONFIG"
+    ]
+  },
+  "core_binding": {
+    "skill_id": "anti-entropy-core",
+    "default": "<cortex-skill-parent>/anti-entropy-core/scripts/knowledge_unit_runner.py",
+    "override": "ANTI_ENTROPY_CORE_RUNNER",
+    "override_present_invalid": "fail-closed",
+    "abi": "anti-entropy-core.runner/v1",
+    "exact_version": "1.2.1",
+    "preflight_timeout_seconds": 30,
+    "operation_scope": "one fixed runner; converter subprocesses receive the same path"
   }
 }

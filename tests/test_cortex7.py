@@ -69,7 +69,7 @@ def test_sc002_sc004_sc007_add_rejections_are_no_write(tmp_path, capsys):
     assert before == sorted(str(x.relative_to(bundle)) for x in bundle.rglob("*"))
 
 def test_sc006_sc008_sc009_profile_contract_and_empty_operability(tmp_path, capsys):
-    assert VERSION == "8.1.0"
+    assert VERSION == "8.1.1"
     bundle = tmp_path / "b"; invoke(capsys, "--workspace", str(bundle), "manage", "init")
     assert json.loads((bundle / "profiles/layout.json").read_text())["version"] == 5
     old = {"version": 3, "unit_name_tag_group": "project", "unit_name_strategy": "tag-title-date", "max_component_length": 96, "duplicate_name_strategy": "reject"}

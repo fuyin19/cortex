@@ -22,7 +22,7 @@ from typing import Any, Iterator
 from .core_runner import CoreFailure, CoreRunner, INNER_CONTRACT, OUTER_CONTRACT
 
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 RESULT_CODES = {"ok": 0, "usage_error": 2, "validation_error": 3, "busy": 5, "io_error": 6}
 OUTER_MANIFEST = "collaborative-workspace.json"
 INNER_MANIFEST = ".agent-workbench.json"
@@ -522,14 +522,16 @@ def _provider_quality(unit: Path, basename: str) -> tuple[str, list[str]]:
     return ("ready_with_warnings" if warning_codes else "ready", sorted(set(warning_codes)))
 
 
-def _run_provider(route: str, snapshot: Path, output_parent: Path, expected_unit: Path) -> tuple[str, list[str]]:
+def _run_provider(route: str, snapshot: Path, output_parent: Path, expected_unit: Path, core_runner: Path) -> tuple[str, list[str]]:
     runner, config = _provider_binding(route)
     command = [
         sys.executable, "-I", str(runner), "--config", str(config), "--input", str(snapshot),
         "--output-dir", str(output_parent), "--bundle-name-mode", "source-basename",
     ]
+    child_env = dict(os.environ)
+    child_env["ANTI_ENTROPY_CORE_RUNNER"] = str(core_runner)
     try:
-        completed = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        completed = subprocess.run(command, env=child_env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, timeout=1200, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise WorkspaceError("io_error", "provider_process_failed", data={"provider_route": route}) from exc
@@ -715,7 +717,7 @@ def _populate_candidate(
             else:
                 snapshot = stage.snapshots.joinpath(*item.relative.split("/"))
                 _copy_file(item.source, snapshot, item.digest)
-                quality, warnings = _run_provider(route, snapshot, unit.parent, unit)
+                quality, warnings = _run_provider(route, snapshot, unit.parent, unit, core.path)
                 if _file_digest(snapshot) != item.digest or _file_digest(unit / "src" / snapshot.name) != item.digest:
                     raise WorkspaceError("validation_error", "provider_source_mismatch")
             core.knowledge_unit_validate(unit)
