@@ -56,6 +56,8 @@ def main(argv: list[str] | None = None) -> int:
         value = workspace.failure(command, workspace.WorkspaceError("usage_error", str(exc)))
     except workspace.WorkspaceError as exc:
         value = workspace.failure(command, exc)
+    except workspace.RuntimeFallback:
+        return 75
     except KeyboardInterrupt:
         value = workspace.failure(command, workspace.WorkspaceError("io_error", "interrupted"))
     except Exception:

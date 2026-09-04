@@ -6,14 +6,15 @@ import importlib
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import sys
 import unicodedata
 import zipfile
 
-VERSION = "1.1.3"
-WHEEL = "cortex_collaborative_workspace-1.1.3-py3-none-any.whl"
-DIGEST = "51139e06e83d61c5372567289f8ec1237b3bbc682d0f2d6787b546260e83180c"
+VERSION = "1.2.0"
+WHEEL = "cortex_collaborative_workspace-1.2.0-py3-none-any.whl"
+DIGEST = "e47052f87921847ab29c99d0938ebb822768ac59757730cb1d847178c966d78a"
 BOOTSTRAP_EXIT = 70
 
 class BootstrapError(Exception): pass
@@ -54,10 +55,10 @@ def _run() -> int:
         if hashlib.sha256(raw).hexdigest() != DIGEST: raise BootstrapError("wheel_digest_mismatch")
         with zipfile.ZipFile(wheel) as archive:
             names = archive.namelist()
-            metadata_name = "cortex_collaborative_workspace-1.1.3.dist-info/METADATA"
+            metadata_name = "cortex_collaborative_workspace-1.2.0.dist-info/METADATA"
             if len(names) != len(set(names)) or metadata_name not in names: raise BootstrapError("wheel_metadata_invalid")
             metadata = archive.read(metadata_name).decode("utf-8")
-            if "Name: cortex-collaborative-workspace\n" not in metadata or "Version: 1.1.3\n" not in metadata or "Requires-Dist:" in metadata: raise BootstrapError("wheel_metadata_invalid")
+            if "Name: cortex-collaborative-workspace\n" not in metadata or "Version: 1.2.0\n" not in metadata or "Requires-Dist:" in metadata: raise BootstrapError("wheel_metadata_invalid")
             if any(name.endswith("entry_points.txt") for name in names): raise BootstrapError("wheel_entry_point_forbidden")
     except BootstrapError: raise
     except Exception as exc: raise BootstrapError("wheel_invalid") from exc
@@ -67,6 +68,7 @@ def _run() -> int:
     prefix = os.path.normcase(str(wheel)).replace("\\", "/") + "/cortex_collaborative_workspace/"
     if package.__version__ != VERSION or not origin.startswith(prefix): raise BootstrapError("import_origin_mismatch")
     core_client = importlib.import_module("cortex_collaborative_workspace.core_runner")
+    workspace_client = importlib.import_module("cortex_collaborative_workspace.workspace")
     for boundary in runner.parents:
         if boundary.name == "cortex":
             marker = boundary / "SKILL.md"
@@ -77,6 +79,10 @@ def _run() -> int:
             if stat.S_ISREG(marker_info.st_mode) and not stat.S_ISLNK(marker_info.st_mode) and not bool(getattr(marker_info, "st_file_attributes", 0) & 0x400):
                 core_skill = boundary.parent / "anti-entropy-core"
                 core_client.set_default_runner(core_skill / "scripts" / "knowledge_unit_runner.py", core_skill / "SKILL.md")
+                workspace_client.set_default_provider_runners({
+                    "file-conversion": boundary.parent / "file-conversion" / "scripts" / "pipeline.py",
+                    "markdown-conversion": boundary.parent / "markdown-conversion" / "scripts" / "pipeline.py",
+                })
             break
     cli = importlib.import_module("cortex_collaborative_workspace.cli")
     return int(cli.main(sys.argv[1:]))

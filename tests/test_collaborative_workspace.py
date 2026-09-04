@@ -15,11 +15,15 @@ from cortex_collaborative_workspace.core_runner import CoreRunner
 
 ROOT = Path(__file__).parents[1]
 CORE_RUNNER = Path(os.environ["CORTEX_REAL_CORE_RUNNER"])
+REAL_PREFLIGHT_BINDINGS = workspace._preflight_provider_bindings
 
 
 @pytest.fixture(autouse=True)
 def explicit_core(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTI_ENTROPY_CORE_RUNNER", str(CORE_RUNNER.resolve()))
+    monkeypatch.setenv("FILE_CONVERSION_RUNNER", str(CORE_RUNNER.resolve()))
+    monkeypatch.setenv("MARKDOWN_CONVERSION_RUNNER", str(CORE_RUNNER.resolve()))
+    monkeypatch.setattr(workspace, "_preflight_provider_bindings", lambda _bindings: None)
 
 
 def _json(path: Path) -> dict[str, object]:
@@ -36,7 +40,7 @@ def _tree(root: Path) -> dict[str, bytes | None]:
 def _fake_providers(monkeypatch: pytest.MonkeyPatch, *, warning: bool = False) -> list[Path]:
     observed: list[Path] = []
 
-    def convert(route: str, snapshot: Path, output_parent: Path, expected_unit: Path, core_runner: Path):
+    def convert(route: str, snapshot: Path, output_parent: Path, expected_unit: Path, core_runner: Path, binding=None):
         assert route in {"file-conversion", "markdown-conversion"}
         assert "agent-workbench" not in snapshot.parts
         assert snapshot.name == expected_unit.name
@@ -130,6 +134,99 @@ raise SystemExit(done.returncode)
         encoding="utf-8",
     )
     return provider
+
+
+@pytest.mark.parametrize("count", [1, 1000])
+def test_provider_readiness_runs_once_per_binding_with_suffix_union(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, count: int,
+) -> None:
+    provider = tmp_path / "preflight-provider.py"
+    provider.write_text(
+        """import json, os, pathlib, sys
+pathlib.Path(os.environ['PREFLIGHT_LOG']).write_text(json.dumps(sys.argv[1:]), encoding='utf-8')
+print(json.dumps({'schema_version':1,'status':'ok','scope':'ready','code':'runtime_ready'}, sort_keys=True, separators=(',',':')))
+""",
+        encoding="utf-8",
+    )
+    log = tmp_path / "preflight.json"
+    monkeypatch.setenv("PREFLIGHT_LOG", str(log))
+    monkeypatch.setenv("MARKDOWN_CONVERSION_RUNNER", str(provider.resolve()))
+    items = [
+        workspace.SourceItem(f"item-{index}.txt", "file", "0" * 64, tmp_path / f"item-{index}.txt")
+        for index in range(count)
+    ]
+    bindings = workspace._provider_bindings(items)
+    REAL_PREFLIGHT_BINDINGS(bindings)
+    argv = json.loads(log.read_text("utf-8"))
+    assert argv.count("--runtime-preflight-json") == 1
+    assert argv.count("--required-suffix") == 1
+    assert argv[-1] == ".txt"
+
+
+def test_zero_readiness_for_create_empty_adoption_ku_noop_status_and_validate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(workspace, "_preflight_provider_bindings", REAL_PREFLIGHT_BINDINGS)
+    monkeypatch.setattr(workspace, "_provider_preflight", lambda binding: calls.append(binding.route))
+
+    created = tmp_path / "created"
+    workspace.prepare(created)
+    workspace.status(created)
+    workspace.validate(created)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    workspace.prepare(empty)
+    ku_root = tmp_path / "ku-root"
+    unit = ku_root / "ref" / "manual"
+    unit.mkdir(parents=True)
+    (unit / "manual.md").write_bytes(b"manual")
+    CoreRunner().knowledge_unit_stage_complete(unit)
+    workspace.prepare(ku_root)
+    assert calls == []
+
+    routed = tmp_path / "routed"
+    (routed / "ref").mkdir(parents=True)
+    (routed / "ref" / "memo.txt").write_bytes(b"memo")
+    _fake_providers(monkeypatch)
+    workspace.prepare(routed)
+    calls.clear()
+    monkeypatch.setattr(workspace, "_preflight_provider_bindings", REAL_PREFLIGHT_BINDINGS)
+    assert workspace.prepare(routed)["data"]["action"] == "no_op"
+    workspace.status(routed)
+    workspace.validate(routed)
+    assert calls == []
+
+
+def test_python_environment_fallback_happens_before_stage_or_workspace_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    (root / "ref" / "memo.txt").write_bytes(b"memo")
+    before = _tree(root)
+    provider = tmp_path / "missing-dependency-provider.py"
+    provider.write_text(
+        "import json\n"
+        "print(json.dumps({'schema_version':1,'status':'error','scope':'python_environment','code':'conversion_python_dependency_unavailable'},sort_keys=True,separators=(',',':')))\n"
+        "raise SystemExit(75)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MARKDOWN_CONVERSION_RUNNER", str(provider.resolve()))
+    monkeypatch.setenv("CORTEX_RUNTIME_FALLBACK", "1")
+    monkeypatch.setattr(workspace, "_preflight_provider_bindings", REAL_PREFLIGHT_BINDINGS)
+    stage_called = False
+
+    def forbidden_stage(_root: Path):
+        nonlocal stage_called
+        stage_called = True
+        raise AssertionError("stage must not be created before runtime readiness")
+
+    monkeypatch.setattr(workspace, "_new_stage", forbidden_stage)
+    with pytest.raises(workspace.RuntimeFallback):
+        workspace.prepare(root)
+    assert not stage_called and _tree(root) == before
+    assert not any(path.name.startswith(".cortex-collaborative-workspace-") for path in root.parent.iterdir())
 
 
 def test_workspace_create_is_complete_and_read_only_status_validate(tmp_path: Path) -> None:
@@ -757,7 +854,7 @@ def test_workspace_provider_runner_remains_required_when_config_is_absent(
     )
 
 
-def test_workspace_mixed_route_executes_valid_item_but_failed_batch_does_not_publish(
+def test_workspace_mixed_route_binding_failure_prevents_all_provider_work(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
     from cortex_collaborative_workspace.cli import main
@@ -784,7 +881,7 @@ def test_workspace_mixed_route_executes_valid_item_but_failed_batch_does_not_pub
         "path": "broken.pdf",
         "provider_route": "file-conversion",
     }]
-    assert log.read_text("utf-8").splitlines() == ["valid.txt"]
+    assert not log.exists()
     assert _tree(root) == before
     assert not any(
         path.name.startswith(".cortex-collaborative-workspace-") for path in root.parent.iterdir()

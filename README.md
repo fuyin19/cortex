@@ -26,7 +26,7 @@ The explicit-only skill taxonomy separates responsibilities without changing the
 
 All KB roles use the same private Cortex 8.1.1 wheel and one selected Core runner for non-init work; ownership is enforced by the skill contract, not by removing CLI routes.
 
-### Collaborative Workspace 1.1.3
+### Collaborative Workspace 1.2.0
 
 The internal `collaborative-workspace` role uses its own deterministic offline adapter. It prepares the fixed outer Collaborative Workspace and nested Agent Workbench contracts without importing Record KB or Notes:
 
@@ -47,7 +47,7 @@ The internal `collaborative-workspace` role uses its own deterministic offline a
     └── output/
 ```
 
-Invoke `scripts/collaborative-workspace/run_collaborative_workspace.py --json prepare|status|validate --root <absolute-root>` through the exact `CORTEX_PYTHON` binding. Prepare alone also accepts repeatable `--outdate <relative-source-path>`. Core uses the same sibling-skill default, explicit override, and exact version preflight described above. Every converter receives this operation's fixed runner through `ANTI_ENTROPY_CORE_RUNNER`. Prepare additionally requires the explicit absolute `FILE_CONVERSION_RUNNER` and/or `MARKDOWN_CONVERSION_RUNNER` for source routes present. The matching `FILE_CONVERSION_CONFIG` and `MARKDOWN_CONVERSION_CONFIG` are optional when absent; a present value, including empty, is validated strictly as an absolute ordinary non-link/reparse file through ordinary non-link/reparse ancestors and passed exactly once as `--config`. Those conversion providers require their matching installed `file-processing` support skill. There is no provider lookup or fallback.
+Invoke the platform `run_collaborative_workspace.ps1` or `run_collaborative_workspace.sh` launcher with `--json prepare|status|validate --root <absolute-root>`. The launcher prefers `CORTEX_PYTHON`, then checks a bounded set of already-installed runtimes for exact Python 3.11/UCD 14. Prepare alone also accepts repeatable `--outdate <relative-source-path>`. Conversion routes default to their fixed sibling pipelines and retain strict optional overrides/config. Prepare performs one suffix-scoped readiness check per used route after its no-op decision and may try another eligible interpreter only for a Python-local missing `pypdf` or AnyDoc capability before staging. It never installs packages or adds a provider registry, cache, daemon, or extra source scan.
 
 Outer `ref/` is human-owned; its required `_outdated/` subtree is excluded from active projection. Prepare otherwise changes outer reference data only for an explicit `--outdate`. Missing or changed sources automatically archive their former prepared KUs in the inner generation history. Nonempty `temp/` returns busy, while `output/` and safe extras are preserved. The runtime does not expose sync, duplicate inference, delete, clean, rebuild, watch, queue, recovery, automatic KB/Notes ingest, or output promotion. See `docs/collaborative-workspace-architecture.md`.
 

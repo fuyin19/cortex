@@ -22,7 +22,7 @@ from typing import Any, Iterator
 from .core_runner import CoreFailure, CoreRunner, INNER_CONTRACT, OUTER_CONTRACT
 
 
-VERSION = "1.1.3"
+VERSION = "1.2.0"
 RESULT_CODES = {"ok": 0, "usage_error": 2, "validation_error": 3, "busy": 5, "io_error": 6}
 OUTER_MANIFEST = "collaborative-workspace.json"
 INNER_MANIFEST = ".agent-workbench.json"
@@ -51,7 +51,10 @@ PROVIDER_BINDINGS = {
     "markdown-conversion": ("MARKDOWN_CONVERSION_RUNNER", "MARKDOWN_CONVERSION_CONFIG"),
 }
 PROVIDER_STDERR_LIMIT = 4096
+PROVIDER_PREFLIGHT_LIMIT = 4096
+PROVIDER_PREFLIGHT_TIMEOUT = 30
 SAFE_COMPONENT = re.compile(r'^[^<>:"/\\|?*\x00-\x1f]+$')
+_DEFAULT_PROVIDER_RUNNERS: dict[str, Path] = {}
 
 
 class WorkspaceError(Exception):
@@ -68,6 +71,10 @@ class WorkspaceError(Exception):
         self.code = code
         self.data = data or {}
         self.issues = issues or [{"code": code}]
+
+
+class RuntimeFallback(Exception):
+    """Private launcher signal: this interpreter lacks route dependencies."""
 
 
 def result(command: str, data: dict[str, Any]) -> dict[str, Any]:
@@ -108,6 +115,17 @@ class Stage:
     identity: Identity
     candidate: Path
     snapshots: Path
+
+
+@dataclass(frozen=True)
+class ProviderBinding:
+    route: str
+    runner: Path
+    config: Path | None
+    suffixes: tuple[str, ...]
+    runner_identity: Identity
+    config_identity: Identity | None
+    config_digest: str | None
 
 
 @dataclass(frozen=True)
@@ -485,15 +503,115 @@ def _ordinary_absolute_file(raw: str | None, missing_code: str, relative_code: s
     return absolute
 
 
-def _provider_binding(route: str) -> tuple[Path, Path | None]:
+def set_default_provider_runners(values: dict[str, Path]) -> None:
+    global _DEFAULT_PROVIDER_RUNNERS
+    _DEFAULT_PROVIDER_RUNNERS = dict(values)
+
+
+def _provider_binding(route: str, suffixes: tuple[str, ...] = ()) -> ProviderBinding:
     runner_env, config_env = PROVIDER_BINDINGS[route]
-    runner = _ordinary_absolute_file(os.environ.get(runner_env), runner_env.lower() + "_required",
+    configured = os.environ.get(runner_env)
+    if configured is None:
+        default = _DEFAULT_PROVIDER_RUNNERS.get(route)
+        configured = str(default) if default is not None else None
+    runner = _ordinary_absolute_file(configured, runner_env.lower() + "_required",
                                      runner_env.lower() + "_not_absolute")
     config = None
     if config_env in os.environ:
         config = _ordinary_absolute_file(os.environ[config_env], config_env.lower() + "_required",
                                          config_env.lower() + "_not_absolute")
-    return runner, config
+    runner_identity = _identity(runner, directory=False)
+    assert runner_identity is not None
+    config_identity = _identity(config, directory=False) if config is not None else None
+    return ProviderBinding(
+        route, runner, config, tuple(sorted(set(suffixes), key=lambda value: value.encode("utf-8"))),
+        runner_identity, config_identity, _file_digest(config) if config is not None else None,
+    )
+
+
+def _provider_bindings(items: list[SourceItem]) -> dict[str, ProviderBinding]:
+    suffixes: dict[str, set[str]] = {}
+    paths: dict[str, str] = {}
+    for item in items:
+        route = _route(item)
+        if route in PROVIDER_BINDINGS:
+            suffixes.setdefault(route, set()).add(Path(item.relative).suffix.casefold())
+            paths.setdefault(route, item.relative)
+    bindings: dict[str, ProviderBinding] = {}
+    for route, values in sorted(suffixes.items(), key=lambda item: item[0].encode("utf-8")):
+        try:
+            bindings[route] = _provider_binding(route, tuple(values))
+        except WorkspaceError as exc:
+            raise WorkspaceError(
+                "validation_error", "projection_failed", data={"failed_items": 1},
+                issues=[_issue(exc.code, paths[route], provider_route=route)],
+            ) from exc
+    return bindings
+
+
+def _verify_provider_binding(binding: ProviderBinding) -> None:
+    if not _same_identity(binding.runner, binding.runner_identity):
+        raise WorkspaceError("validation_error", "provider_binding_changed", data={"provider_route": binding.route})
+    if binding.config is not None:
+        if not _same_identity(binding.config, binding.config_identity) or _file_digest(binding.config) != binding.config_digest:
+            raise WorkspaceError("validation_error", "provider_binding_changed", data={"provider_route": binding.route})
+
+
+def _provider_preflight(binding: ProviderBinding) -> None:
+    _verify_provider_binding(binding)
+    command = [sys.executable, "-I", "-B", str(binding.runner), "--runtime-preflight-json"]
+    if binding.config is not None:
+        command.extend(("--config", str(binding.config)))
+    for suffix in binding.suffixes:
+        command.extend(("--required-suffix", suffix))
+    try:
+        completed = subprocess.run(
+            command, env=dict(os.environ), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=PROVIDER_PREFLIGHT_TIMEOUT, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise WorkspaceError("io_error", "provider_preflight_process_failed", data={"provider_route": binding.route}) from exc
+    if len(completed.stdout) > PROVIDER_PREFLIGHT_LIMIT or len(completed.stderr) > PROVIDER_PREFLIGHT_LIMIT:
+        raise WorkspaceError("validation_error", "provider_preflight_protocol_invalid", data={"provider_route": binding.route})
+    try:
+        payload = json.loads(completed.stdout.decode("utf-8", errors="strict"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise WorkspaceError("validation_error", "provider_preflight_protocol_invalid", data={"provider_route": binding.route}) from exc
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schema_version", "status", "scope", "code"}
+        or payload.get("schema_version") != 1
+        or payload.get("status") not in {"ok", "error"}
+        or not isinstance(payload.get("scope"), str)
+        or not isinstance(payload.get("code"), str)
+        or completed.stderr
+    ):
+        raise WorkspaceError("validation_error", "provider_preflight_protocol_invalid", data={"provider_route": binding.route})
+    if completed.returncode == 0 and payload == {
+        "schema_version": 1, "status": "ok", "scope": "ready", "code": "runtime_ready",
+    }:
+        return
+    if (
+        completed.returncode == 75 and payload.get("status") == "error"
+        and payload.get("scope") == "python_environment"
+    ):
+        if os.environ.get("CORTEX_RUNTIME_FALLBACK") == "1":
+            raise RuntimeFallback()
+        raise WorkspaceError(
+            "validation_error", "conversion_runtime_unavailable",
+            data={"provider_route": binding.route, "runtime_scope": "python_environment"},
+        )
+    if completed.returncode not in {0, 1, 75}:
+        raise WorkspaceError("validation_error", "provider_preflight_protocol_invalid", data={"provider_route": binding.route})
+    raise WorkspaceError(
+        "validation_error", str(payload.get("code") or "conversion_runtime_unavailable"),
+        data={"provider_route": binding.route, "runtime_scope": str(payload.get("scope") or "protocol")},
+    )
+
+
+def _preflight_provider_bindings(bindings: dict[str, ProviderBinding]) -> None:
+    for binding in bindings.values():
+        _provider_preflight(binding)
 
 
 def _provider_quality(unit: Path, basename: str) -> tuple[str, list[str]]:
@@ -537,11 +655,12 @@ def _provider_stderr(raw: bytes) -> tuple[str, bool]:
     return visible[-PROVIDER_STDERR_LIMIT:], truncated
 
 
-def _run_provider(route: str, snapshot: Path, output_parent: Path, expected_unit: Path, core_runner: Path) -> tuple[str, list[str]]:
-    runner, config = _provider_binding(route)
-    command = [sys.executable, "-I", str(runner)]
-    if config is not None:
-        command.extend(("--config", str(config)))
+def _run_provider(route: str, snapshot: Path, output_parent: Path, expected_unit: Path, core_runner: Path,
+                  binding: ProviderBinding | None = None) -> tuple[str, list[str]]:
+    selected = binding or _provider_binding(route, (snapshot.suffix.casefold(),))
+    command = [sys.executable, "-I", "-B", str(selected.runner)]
+    if selected.config is not None:
+        command.extend(("--config", str(selected.config)))
     command.extend((
         "--input", str(snapshot), "--output-dir", str(output_parent),
         "--bundle-name-mode", "source-basename",
@@ -690,6 +809,7 @@ def _populate_candidate(
     retired_paths: tuple[str, ...] = (),
     batch_name: str | None = None,
     outer_archive: Path | None = None,
+    provider_bindings: dict[str, ProviderBinding] | None = None,
 ) -> dict[str, Any]:
     candidate = stage.candidate
     _write_json_exclusive(candidate / OUTER_MANIFEST, _outer_manifest(workspace_id))
@@ -742,7 +862,10 @@ def _populate_candidate(
             else:
                 snapshot = stage.snapshots.joinpath(*item.relative.split("/"))
                 _copy_file(item.source, snapshot, item.digest)
-                quality, warnings = _run_provider(route, snapshot, unit.parent, unit, core.path)
+                quality, warnings = _run_provider(
+                    route, snapshot, unit.parent, unit, core.path,
+                    None if provider_bindings is None else provider_bindings[route],
+                )
                 if _file_digest(snapshot) != item.digest or _file_digest(unit / "src" / snapshot.name) != item.digest:
                     raise WorkspaceError("validation_error", "provider_source_mismatch")
             core.knowledge_unit_validate(unit)
@@ -775,6 +898,7 @@ def _build_candidate(
     retired_paths: tuple[str, ...] = (),
     batch_name: str | None = None,
     outer_archive: Path | None = None,
+    provider_bindings: dict[str, ProviderBinding] | None = None,
 ) -> tuple[Stage, dict[str, Any]]:
     stage = _new_stage(root)
     try:
@@ -788,6 +912,7 @@ def _build_candidate(
             retired_paths=retired_paths,
             batch_name=batch_name,
             outer_archive=outer_archive,
+            provider_bindings=provider_bindings,
         )
     except Exception:
         _cleanup_stage(stage)
@@ -1115,9 +1240,12 @@ def _adopt(root: Path, core: CoreRunner) -> dict[str, Any]:
     if blockers:
         raise WorkspaceError("validation_error", "adoption_blocked", issues=blockers,
                              data={"state": "invalid"})
+    provider_bindings = _provider_bindings(items)
+    _preflight_provider_bindings(provider_bindings)
     workspace_id = str(uuid.uuid4())
     stage, manifest = _build_candidate(
         root, workspace_id, 1, items, core, outer_archive=outer_archive,
+        provider_bindings=provider_bindings,
     )
     installed: list[Installed] = []
     recognized = False
@@ -1310,6 +1438,8 @@ def _refresh_or_noop(
             "generation": inner["generation"], "source_items": len(items), "warnings": inner["warnings"],
         })
     temp_identity = _literal_empty(temp)
+    provider_bindings = _provider_bindings(active_items)
+    _preflight_provider_bindings(provider_bindings)
     old_generation = int(inner["generation"])
     batch_name = _archive_batch_name(old_generation) if retired_paths else None
     stage, candidate_manifest = _build_candidate(
@@ -1321,6 +1451,7 @@ def _refresh_or_noop(
         previous_ref=prepared_ref,
         retired_paths=retired_paths,
         batch_name=batch_name,
+        provider_bindings=provider_bindings,
     )
     candidate_ref = stage.candidate / "agent-workbench" / "ref"
     backup = prepared_ref.with_name(".ref-old-" + uuid.uuid4().hex)
@@ -1476,6 +1607,6 @@ def validate(root: Path) -> dict[str, Any]:
 
 
 __all__ = [
-    "INNER_CONTRACT", "OUTER_CONTRACT", "VERSION", "WorkspaceError", "failure", "prepare", "result",
-    "status", "validate",
+    "INNER_CONTRACT", "OUTER_CONTRACT", "VERSION", "RuntimeFallback", "WorkspaceError", "failure", "prepare", "result",
+    "set_default_provider_runners", "status", "validate",
 ]

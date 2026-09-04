@@ -9,17 +9,22 @@ import subprocess
 import sys
 import zipfile
 
+import pytest
+
 
 ROOT = Path(__file__).parents[1]
 SKILL = ROOT / "skills" / "cortex" / "scripts" / "collaborative-workspace"
 RUNNER = SKILL / "run_collaborative_workspace.py"
-WHEEL = SKILL / "vendor" / "cortex_collaborative_workspace-1.1.3-py3-none-any.whl"
+WHEEL = SKILL / "vendor" / "cortex_collaborative_workspace-1.2.0-py3-none-any.whl"
 CORE_RUNNER = Path(os.environ["CORTEX_REAL_CORE_RUNNER"])
 PAYLOADS = (
     "run_collaborative_workspace.py",
     "run_collaborative_workspace.cmd",
+    "run_collaborative_workspace.ps1",
+    "run_collaborative_workspace.sh",
+    "select_collaborative_workspace.py",
     "runtime-manifest.json",
-    "vendor/cortex_collaborative_workspace-1.1.3-py3-none-any.whl",
+    "vendor/cortex_collaborative_workspace-1.2.0-py3-none-any.whl",
 )
 
 
@@ -54,13 +59,13 @@ def test_workspace_runtime_is_deterministic_closed_and_dependency_free() -> None
         "isolation": "-I",
         "python": "3.11",
         "schema_version": 1,
-        "version": "1.1.3",
+        "version": "1.2.0",
         "wheel": WHEEL.name,
         "wheel_sha256": hashlib.sha256(WHEEL.read_bytes()).hexdigest(),
     }
     with zipfile.ZipFile(WHEEL) as archive:
         names = archive.namelist()
-        metadata = archive.read("cortex_collaborative_workspace-1.1.3.dist-info/METADATA").decode("utf-8")
+        metadata = archive.read("cortex_collaborative_workspace-1.2.0.dist-info/METADATA").decode("utf-8")
     assert "Requires-Dist:" not in metadata and not any(name.endswith("entry_points.txt") for name in names)
     assert "cortex_collaborative_workspace/workspace.py" in names
     assert not (SKILL / "SKILL.md").exists()
@@ -68,7 +73,7 @@ def test_workspace_runtime_is_deterministic_closed_and_dependency_free() -> None
 
 def test_workspace_runtime_version_tamper_and_binding_fail_closed(tmp_path: Path) -> None:
     version = _run("--version")
-    assert version.returncode == 0 and version.stdout == "cortex-collaborative-workspace 1.1.3\n"
+    assert version.returncode == 0 and version.stdout == "cortex-collaborative-workspace 1.2.0\n"
     copied = tmp_path / "skill"
     shutil.copytree(SKILL, copied)
     wheel = copied / "vendor" / WHEEL.name
@@ -102,7 +107,8 @@ def test_workspace_surface_fixture_and_router_are_exact() -> None:
     ]
     assert fixture["skill"] == "cortex"
     assert fixture["adapter"] == "skills/cortex/scripts/collaborative-workspace"
-    assert fixture["conditional_provider_environment"] == {
+    assert fixture["conditional_provider_environment"] == {}
+    assert fixture["optional_provider_runner_overrides"] == {
         "file-conversion": ["FILE_CONVERSION_RUNNER"],
         "markdown-conversion": ["MARKDOWN_CONVERSION_RUNNER"],
     }
@@ -145,3 +151,86 @@ def test_workspace_runtime_source_and_wheel_have_parity(tmp_path: Path) -> None:
                 values[relative] = raw
         return values
     assert normalized_tree(roots[0]) == normalized_tree(roots[1])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows runtime selection evidence")
+def test_selector_falls_back_only_for_exit75_and_preserves_success_bytes(tmp_path: Path) -> None:
+    uv = Path.home() / "AppData/Roaming/uv/python/cpython-3.11.15-windows-x86_64-none/python.exe"
+    conda = Path.home() / "coding/python/anaconda3/python.exe"
+    if not uv.is_file() or not conda.is_file():
+        pytest.skip("required native Python candidates are not installed")
+    runner = tmp_path / "candidate-runner.py"
+    runner.write_text(
+        "import importlib.util,sys\n"
+        "if importlib.util.find_spec('pypdf') is None: raise SystemExit(75)\n"
+        "sys.stdout.buffer.write(b'winner-output\\x00\\xff')\n",
+        encoding="utf-8",
+    )
+    inventory = json.dumps({
+        "schema_version": 1, "candidates": [str(uv.resolve()), str(conda.resolve())],
+        "probed": 0, "end": 2,
+    }).encode()
+    selected = subprocess.run(
+        [str(uv), "-I", "-B", str(SKILL / "select_collaborative_workspace.py"), str(runner)],
+        input=inventory, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=False,
+    )
+    assert selected.returncode == 0
+    assert selected.stdout == b"winner-output\x00\xff" and selected.stderr == b""
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows runtime selection evidence")
+def test_selector_treats_non75_as_terminal_without_second_candidate(tmp_path: Path) -> None:
+    uv = Path.home() / "AppData/Roaming/uv/python/cpython-3.11.15-windows-x86_64-none/python.exe"
+    conda = Path.home() / "coding/python/anaconda3/python.exe"
+    if not uv.is_file() or not conda.is_file():
+        pytest.skip("required native Python candidates are not installed")
+    runner = tmp_path / "terminal-runner.py"
+    runner.write_text("import sys\nsys.stderr.buffer.write(b'terminal\\n')\nraise SystemExit(1)\n", encoding="utf-8")
+    inventory = json.dumps({
+        "schema_version": 1, "candidates": [str(uv.resolve()), str(conda.resolve())],
+        "probed": 0, "end": 2,
+    }).encode()
+    selected = subprocess.run(
+        [str(uv), "-I", "-B", str(SKILL / "select_collaborative_workspace.py"), str(runner)],
+        input=inventory, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, check=False,
+    )
+    assert selected.returncode == 1 and selected.stdout == b"" and selected.stderr == b"terminal\n"
+
+
+def test_selector_cancellation_kills_and_waits_without_mutating_parent_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+    selector_path = SKILL / "select_collaborative_workspace.py"
+    spec = importlib.util.spec_from_file_location("cw_runtime_selector_test", selector_path)
+    assert spec and spec.loader
+    selector = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(selector)
+
+    class Child:
+        waits = 0
+        killed = False
+
+        def wait(self):
+            self.waits += 1
+            if self.waits == 1:
+                raise KeyboardInterrupt
+            return -9
+
+        def kill(self):
+            self.killed = True
+
+    child = Child()
+    captured = {}
+
+    def start(*args, **kwargs):
+        captured.update(kwargs)
+        return child
+
+    monkeypatch.setattr(selector.subprocess, "Popen", start)
+    monkeypatch.setenv("CORTEX_PYTHON", "parent-value")
+    with pytest.raises(KeyboardInterrupt):
+        selector.run_child(Path(sys.executable), tmp_path / "runner.py", [], True)
+    assert child.killed and child.waits == 2
+    assert captured["env"]["CORTEX_RUNTIME_FALLBACK"] == "1"
+    assert os.environ["CORTEX_PYTHON"] == "parent-value"

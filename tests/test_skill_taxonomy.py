@@ -36,7 +36,7 @@ def test_internal_adapters_are_private_complete_and_versioned() -> None:
     expected = {
         "kb": (("run_cortex.py", "run_cortex.cmd", "runtime-manifest.json"), "8.1.1"),
         "notes": (("run_notes.py", "run_notes.cmd", "runtime-manifest.json"), "2.1.0"),
-        "collaborative-workspace": (("run_collaborative_workspace.py", "run_collaborative_workspace.cmd", "runtime-manifest.json"), "1.1.3"),
+        "collaborative-workspace": (("run_collaborative_workspace.py", "run_collaborative_workspace.cmd", "run_collaborative_workspace.ps1", "run_collaborative_workspace.sh", "select_collaborative_workspace.py", "runtime-manifest.json"), "1.2.0"),
     }
     for name, (files, version) in expected.items():
         adapter = ROOT / "skills/cortex/scripts" / name
@@ -56,7 +56,7 @@ def test_removed_skill_names_have_no_paths() -> None:
 def test_runtime_and_plugin_versions_are_preserved_or_bumped() -> None:
     assert VERSION == "8.1.1" and len(PUBLIC_ROUTES) == 15
     plugin = json.loads((ROOT / ".claude-plugin/plugin.json").read_text("utf-8"))
-    assert plugin["version"] == "12.0.0"
+    assert plugin["version"] == "12.1.0"
     assert "One explicit-only Cortex skill" in plugin["description"]
 
 
