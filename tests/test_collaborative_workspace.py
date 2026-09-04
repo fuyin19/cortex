@@ -59,6 +59,56 @@ def _fake_providers(monkeypatch: pytest.MonkeyPatch, *, warning: bool = False) -
     return observed
 
 
+def _failing_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stderr: bytes,
+    stdout: bytes = b"",
+    exit_code: int = 23,
+) -> None:
+    provider = tmp_path / "failing-provider.py"
+    provider.write_text(
+        """from __future__ import annotations
+import argparse, json, pathlib, sys
+p=argparse.ArgumentParser(); p.add_argument('--config', required=True); p.add_argument('--input', required=True); p.add_argument('--output-dir', required=True); p.add_argument('--bundle-name-mode', required=True); a=p.parse_args()
+payload=json.loads(pathlib.Path(a.config).read_text(encoding='utf-8'))
+sys.stdout.buffer.write(bytes.fromhex(payload['stdout']))
+sys.stderr.buffer.write(bytes.fromhex(payload['stderr']))
+raise SystemExit(payload['exit_code'])
+""",
+        encoding="utf-8",
+    )
+    config = tmp_path / "failing-provider.json"
+    config.write_text(
+        json.dumps({"stderr": stderr.hex(), "stdout": stdout.hex(), "exit_code": exit_code}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MARKDOWN_CONVERSION_RUNNER", str(provider.resolve()))
+    monkeypatch.setenv("MARKDOWN_CONVERSION_CONFIG", str(config.resolve()))
+    monkeypatch.setenv("FILE_CONVERSION_RUNNER", str(provider.resolve()))
+    monkeypatch.setenv("FILE_CONVERSION_CONFIG", str(config.resolve()))
+
+
+def _provider_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stderr: bytes,
+    stdout: bytes = b"",
+) -> workspace.WorkspaceError:
+    _failing_provider(tmp_path, monkeypatch, stderr=stderr, stdout=stdout)
+    snapshot = tmp_path / "snapshot.txt"
+    snapshot.write_bytes(b"source")
+    output = tmp_path / "candidate"
+    output.mkdir()
+    with pytest.raises(workspace.WorkspaceError, match="provider_conversion_failed") as captured:
+        workspace._run_provider(
+            "markdown-conversion", snapshot, output, output / snapshot.name, CORE_RUNNER,
+        )
+    return captured.value
+
+
 def test_workspace_create_is_complete_and_read_only_status_validate(tmp_path: Path) -> None:
     root = tmp_path / "workspace"
     created = workspace.prepare(root)
@@ -538,6 +588,145 @@ raise SystemExit(done.returncode)
     assert (quality, warnings) == ("ready", [])
     assert (output / "report.txt" / "report.txt.md").is_file()
     assert CoreRunner().knowledge_unit_validate(output / "report.txt")["status"] == "ok"
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected", "truncated"),
+    [
+        pytest.param(b"short failure\n", "short failure\n", False, id="short"),
+        pytest.param(b"discarded" + b"L" * 4096, "L" * 4096, True, id="long-right-tail"),
+        pytest.param(
+            "文".encode("utf-8") + b"x" * 4095,
+            "文" + "x" * 4095,
+            False,
+            id="utf8-character-crosses-old-byte-boundary",
+        ),
+        pytest.param(b"bad:\xff\xfe", r"bad:\xff\xfe", False, id="invalid-utf8"),
+        pytest.param(
+            b"nul:\x00 cr:\r lf:\n tab:\t esc:\x1b del:\x7f c1:" + "\u009b\u009d".encode("utf-8"),
+            r"nul:\x00 cr:\r lf:" + "\n" + " tab:\t" + r" esc:\x1b del:\x7f c1:\x9b\x9d",
+            False,
+            id="c0-c1-controls",
+        ),
+        pytest.param(
+            b"\x00" * 1025,
+            (r"\x00" * 1025)[-4096:],
+            True,
+            id="escape-expansion-is-truncated-after-sanitizing",
+        ),
+    ],
+)
+def test_workspace_provider_failure_exposes_sanitized_bounded_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stderr: bytes,
+    expected: str,
+    truncated: bool,
+) -> None:
+    captured = _provider_failure(
+        tmp_path, monkeypatch, stderr=stderr, stdout=b"stdout-must-not-be-returned",
+    )
+    assert captured.data == {
+        "provider_route": "markdown-conversion",
+        "provider_exit_code": 23,
+        "provider_stderr_excerpt": expected,
+        "provider_stderr_truncated": truncated,
+    }
+    encoded = json.dumps(workspace.failure("collaborative_workspace.prepare", captured), ensure_ascii=True)
+    assert json.loads(encoded)["data"] == captured.data
+    assert len(captured.data["provider_stderr_excerpt"]) <= 4096
+    assert "stdout-must-not-be-returned" not in encoded
+
+
+def test_workspace_provider_failure_omits_diagnostics_for_empty_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _provider_failure(
+        tmp_path, monkeypatch, stderr=b"", stdout=b"stdout-must-not-be-returned",
+    )
+    assert captured.data == {
+        "provider_route": "markdown-conversion",
+        "provider_exit_code": 23,
+    }
+
+
+def test_workspace_provider_failures_aggregate_without_adoption_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from cortex_collaborative_workspace.cli import main
+
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    (root / "ref" / "one.pdf").write_bytes(b"one")
+    (root / "ref" / "two.pdf").write_bytes(b"two")
+    before = _tree(root)
+    _failing_provider(
+        tmp_path,
+        monkeypatch,
+        stderr=b"missing file-processing support skill\r\n",
+        stdout=b"stdout-must-not-be-returned",
+    )
+
+    assert main(["--json", "prepare", "--root", str(root)]) == 3
+    value = json.loads(capsys.readouterr().out)
+    assert value["status"] == "validation_error"
+    assert value["command"] == "collaborative_workspace.prepare"
+    assert value["data"] == {"failed_items": 2}
+    assert value["issues"] == [
+        {
+            "code": "provider_conversion_failed",
+            "path": name,
+            "provider_route": "file-conversion",
+            "provider_exit_code": 23,
+            "provider_stderr_excerpt": "missing file-processing support skill\\r\n",
+            "provider_stderr_truncated": False,
+        }
+        for name in ("one.pdf", "two.pdf")
+    ]
+    encoded = json.dumps(value)
+    assert value["exit_code"] == 3
+    assert "stdout-must-not-be-returned" not in encoded
+    assert _tree(root) == before
+    assert not any(
+        path.name.startswith(".cortex-collaborative-workspace-") for path in root.parent.iterdir()
+    )
+
+
+def test_workspace_provider_failure_preserves_previous_projection_on_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    source = root / "ref" / "memo.pdf"
+    source.write_bytes(b"one")
+    real_provider = workspace._run_provider
+    _fake_providers(monkeypatch)
+    workspace.prepare(root)
+    source.write_bytes(b"two")
+    before = _tree(root)
+    monkeypatch.setattr(workspace, "_run_provider", real_provider)
+    _failing_provider(tmp_path, monkeypatch, stderr=b"conversion runtime unavailable")
+
+    with pytest.raises(workspace.WorkspaceError, match="projection_failed") as captured:
+        workspace.prepare(root)
+
+    assert captured.value.issues == [{
+        "code": "provider_conversion_failed",
+        "path": "memo.pdf",
+        "provider_route": "file-conversion",
+        "provider_exit_code": 23,
+        "provider_stderr_excerpt": "conversion runtime unavailable",
+        "provider_stderr_truncated": False,
+    }]
+    assert _tree(root) == before
+    assert (
+        root / "agent-workbench" / "ref" / "memo.pdf" / "src" / "memo.pdf"
+    ).read_bytes() == b"one"
+    assert not any(
+        path.name.startswith(".cortex-collaborative-workspace-") for path in root.parent.iterdir()
+    )
 
 
 def test_workspace_adoption_failure_cleans_only_unchanged_owned_artifacts(

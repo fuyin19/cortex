@@ -11,9 +11,9 @@ import sys
 import unicodedata
 import zipfile
 
-VERSION = "1.1.1"
-WHEEL = "cortex_collaborative_workspace-1.1.1-py3-none-any.whl"
-DIGEST = "6beda6f1cb8eee50319f3ef93ce542815e2905400f9fc0ee72ffc96f96aa8436"
+VERSION = "1.1.2"
+WHEEL = "cortex_collaborative_workspace-1.1.2-py3-none-any.whl"
+DIGEST = "fe3871b80aa47a9adde02c02da8150d5c634ea8613aa35aff9861fcfd2a33469"
 BOOTSTRAP_EXIT = 70
 
 class BootstrapError(Exception): pass
@@ -54,10 +54,10 @@ def _run() -> int:
         if hashlib.sha256(raw).hexdigest() != DIGEST: raise BootstrapError("wheel_digest_mismatch")
         with zipfile.ZipFile(wheel) as archive:
             names = archive.namelist()
-            metadata_name = "cortex_collaborative_workspace-1.1.1.dist-info/METADATA"
+            metadata_name = "cortex_collaborative_workspace-1.1.2.dist-info/METADATA"
             if len(names) != len(set(names)) or metadata_name not in names: raise BootstrapError("wheel_metadata_invalid")
             metadata = archive.read(metadata_name).decode("utf-8")
-            if "Name: cortex-collaborative-workspace\n" not in metadata or "Version: 1.1.1\n" not in metadata or "Requires-Dist:" in metadata: raise BootstrapError("wheel_metadata_invalid")
+            if "Name: cortex-collaborative-workspace\n" not in metadata or "Version: 1.1.2\n" not in metadata or "Requires-Dist:" in metadata: raise BootstrapError("wheel_metadata_invalid")
             if any(name.endswith("entry_points.txt") for name in names): raise BootstrapError("wheel_entry_point_forbidden")
     except BootstrapError: raise
     except Exception as exc: raise BootstrapError("wheel_invalid") from exc

@@ -26,7 +26,7 @@ The explicit-only skill taxonomy separates responsibilities without changing the
 
 All KB roles use the same private Cortex 8.1.1 wheel and one selected Core runner for non-init work; ownership is enforced by the skill contract, not by removing CLI routes.
 
-### Collaborative Workspace 1.1
+### Collaborative Workspace 1.1.2
 
 The internal `collaborative-workspace` role uses its own deterministic offline adapter. It prepares the fixed outer Collaborative Workspace and nested Agent Workbench contracts without importing Record KB or Notes:
 
@@ -47,7 +47,7 @@ The internal `collaborative-workspace` role uses its own deterministic offline a
     └── output/
 ```
 
-Invoke `scripts/collaborative-workspace/run_collaborative_workspace.py --json prepare|status|validate --root <absolute-root>` through the exact `CORTEX_PYTHON` binding. Prepare alone also accepts repeatable `--outdate <relative-source-path>`. Core uses the same sibling-skill default, explicit override, and exact version preflight described above. Every converter receives this operation's fixed runner through `ANTI_ENTROPY_CORE_RUNNER`. Prepare additionally requires explicit absolute `FILE_CONVERSION_RUNNER`/`FILE_CONVERSION_CONFIG` and/or `MARKDOWN_CONVERSION_RUNNER`/`MARKDOWN_CONVERSION_CONFIG` when those source routes are present. There is no provider lookup or fallback.
+Invoke `scripts/collaborative-workspace/run_collaborative_workspace.py --json prepare|status|validate --root <absolute-root>` through the exact `CORTEX_PYTHON` binding. Prepare alone also accepts repeatable `--outdate <relative-source-path>`. Core uses the same sibling-skill default, explicit override, and exact version preflight described above. Every converter receives this operation's fixed runner through `ANTI_ENTROPY_CORE_RUNNER`. Prepare additionally requires explicit absolute `FILE_CONVERSION_RUNNER`/`FILE_CONVERSION_CONFIG` and/or `MARKDOWN_CONVERSION_RUNNER`/`MARKDOWN_CONVERSION_CONFIG` when those source routes are present. Those conversion providers require their matching installed `file-processing` support skill. There is no provider lookup or fallback.
 
 Outer `ref/` is human-owned; its required `_outdated/` subtree is excluded from active projection. Prepare otherwise changes outer reference data only for an explicit `--outdate`. Missing or changed sources automatically archive their former prepared KUs in the inner generation history. Nonempty `temp/` returns busy, while `output/` and safe extras are preserved. The runtime does not expose sync, duplicate inference, delete, clean, rebuild, watch, queue, recovery, automatic KB/Notes ingest, or output promotion. See `docs/collaborative-workspace-architecture.md`.
 
@@ -63,6 +63,6 @@ Show/delete authorization uses `CORTEX_UNIT_TREE_V2`, which binds partition then
 
 `tools/migrate_layout.py` is the sole noninstalled, nonpublic migration dispatcher. It preserves source-read-only Layout 3 → Layout 4 plan/build and adds source-read-only Layout 4 → Layout 5 plan/build outside the KB and repository roots on the same volume. Build requires the exact initialized Registry 1 KB root, its derived repository boundary, and the explicit Core runner; omitted or false boundary operands fail closed. It has no cutover command. Core completes the Layout 4 → 5 candidate envelope.
 
-Core distribution and binding are closed for Core 1.2.1. This release does not repair the conversion skills' other `_shared`/sibling runtime dependencies or claim a fully standalone file-conversion or AC26 prepare fix. Converter runner/config bindings remain explicit. Tests use synthetic stages and controlled providers; real provider conversion is outside this gate.
+Core distribution and binding are closed for Core 1.2.1. Conversion runtime dependencies remain in the matching installed `file-processing` support skill; Cortex does not vendor them. Converter runner/config bindings remain explicit. A nonzero provider exit retains `provider_conversion_failed`, route, and exit code and adds `provider_stderr_excerpt` plus `provider_stderr_truncated` when stderr is nonempty. Tests use synthetic stages and controlled providers; real provider conversion is outside this gate.
 
 For the regression gate, set `CORTEX_REAL_CORE_RUNNER` to the actual Core Candidate runner before `python -m pytest`; the real-Core integration tests fail if it is absent rather than skipping.

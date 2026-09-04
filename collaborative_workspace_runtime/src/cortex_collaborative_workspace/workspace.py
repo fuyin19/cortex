@@ -22,7 +22,7 @@ from typing import Any, Iterator
 from .core_runner import CoreFailure, CoreRunner, INNER_CONTRACT, OUTER_CONTRACT
 
 
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 RESULT_CODES = {"ok": 0, "usage_error": 2, "validation_error": 3, "busy": 5, "io_error": 6}
 OUTER_MANIFEST = "collaborative-workspace.json"
 INNER_MANIFEST = ".agent-workbench.json"
@@ -50,6 +50,7 @@ PROVIDER_BINDINGS = {
     "file-conversion": ("FILE_CONVERSION_RUNNER", "FILE_CONVERSION_CONFIG"),
     "markdown-conversion": ("MARKDOWN_CONVERSION_RUNNER", "MARKDOWN_CONVERSION_CONFIG"),
 }
+PROVIDER_STDERR_LIMIT = 4096
 SAFE_COMPONENT = re.compile(r'^[^<>:"/\\|?*\x00-\x1f]+$')
 
 
@@ -522,6 +523,18 @@ def _provider_quality(unit: Path, basename: str) -> tuple[str, list[str]]:
     return ("ready_with_warnings" if warning_codes else "ready", sorted(set(warning_codes)))
 
 
+def _provider_stderr(raw: bytes) -> tuple[str, bool]:
+    decoded = raw.decode("utf-8", errors="backslashreplace")
+    visible = "".join(
+        character
+        if character in {"\n", "\t"} or unicodedata.category(character) != "Cc"
+        else character.encode("unicode_escape").decode("ascii")
+        for character in decoded
+    )
+    truncated = len(visible) > PROVIDER_STDERR_LIMIT
+    return visible[-PROVIDER_STDERR_LIMIT:], truncated
+
+
 def _run_provider(route: str, snapshot: Path, output_parent: Path, expected_unit: Path, core_runner: Path) -> tuple[str, list[str]]:
     runner, config = _provider_binding(route)
     command = [
@@ -536,9 +549,16 @@ def _run_provider(route: str, snapshot: Path, output_parent: Path, expected_unit
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise WorkspaceError("io_error", "provider_process_failed", data={"provider_route": route}) from exc
     if completed.returncode != 0:
+        data: dict[str, Any] = {"provider_route": route, "provider_exit_code": completed.returncode}
+        if completed.stderr:
+            excerpt, truncated = _provider_stderr(completed.stderr)
+            data.update({
+                "provider_stderr_excerpt": excerpt,
+                "provider_stderr_truncated": truncated,
+            })
         raise WorkspaceError(
             "validation_error", "provider_conversion_failed",
-            data={"provider_route": route, "provider_exit_code": completed.returncode},
+            data=data,
         )
     _identity(expected_unit, directory=True)
     return _provider_quality(expected_unit, snapshot.name)
