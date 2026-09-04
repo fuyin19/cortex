@@ -109,6 +109,29 @@ def _provider_failure(
     return captured.value
 
 
+def _configless_provider(tmp_path: Path) -> Path:
+    provider = tmp_path / "configless-provider.py"
+    provider.write_text(
+        """from __future__ import annotations
+import argparse, json, os, pathlib, shutil, subprocess, sys
+assert '--config' not in sys.argv
+p=argparse.ArgumentParser(); p.add_argument('--input', required=True); p.add_argument('--output-dir', required=True); p.add_argument('--bundle-name-mode', required=True); a=p.parse_args()
+assert a.bundle_name_mode == 'source-basename'
+source=pathlib.Path(a.input); unit=pathlib.Path(a.output_dir)/source.name; unit.mkdir()
+(unit/(source.name+'.md')).write_text('# converted\\n', encoding='utf-8')
+(unit/(source.name+'.json')).write_text(json.dumps({'quality':{'status':'complete','warnings':[]}}), encoding='utf-8')
+(unit/'src').mkdir(); shutil.copyfile(source, unit/'src'/source.name); (unit/'assets').mkdir()
+wire=(json.dumps({'command':'stage.complete','request':{'path':str(unit.resolve()),'private_root_files':[]}},separators=(',',':'))+'\\n').encode()
+done=subprocess.run([sys.executable,'-I',os.environ['ANTI_ENTROPY_CORE_RUNNER']],input=wire,stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=False)
+if done.returncode == 0 and os.environ.get('SYNTHETIC_PROVIDER_LOG'):
+    with open(os.environ['SYNTHETIC_PROVIDER_LOG'],'a',encoding='utf-8') as stream: stream.write(source.name+'\\n')
+raise SystemExit(done.returncode)
+""",
+        encoding="utf-8",
+    )
+    return provider
+
+
 def test_workspace_create_is_complete_and_read_only_status_validate(tmp_path: Path) -> None:
     root = tmp_path / "workspace"
     created = workspace.prepare(root)
@@ -561,7 +584,9 @@ def test_workspace_provider_binding_uses_exact_snapshot_cli_and_candidate_target
     provider.write_text(
         """from __future__ import annotations
 import argparse, json, os, pathlib, shutil, subprocess, sys
+assert sys.argv.count('--config') == 1
 p=argparse.ArgumentParser(); p.add_argument('--config', required=True); p.add_argument('--input', required=True); p.add_argument('--output-dir', required=True); p.add_argument('--bundle-name-mode', required=True); a=p.parse_args()
+assert a.config == os.environ['EXPECTED_PROVIDER_CONFIG']
 assert pathlib.Path(a.config).read_text() == 'config' and a.bundle_name_mode == 'source-basename'
 source=pathlib.Path(a.input); unit=pathlib.Path(a.output_dir)/source.name; unit.mkdir()
 (unit/(source.name+'.md')).write_text('# converted\\n', encoding='utf-8')
@@ -577,6 +602,7 @@ raise SystemExit(done.returncode)
     config.write_text("config", encoding="utf-8")
     monkeypatch.setenv("MARKDOWN_CONVERSION_RUNNER", str(provider.resolve()))
     monkeypatch.setenv("MARKDOWN_CONVERSION_CONFIG", str(config.resolve()))
+    monkeypatch.setenv("EXPECTED_PROVIDER_CONFIG", str(config.resolve()))
     snapshot = tmp_path / "snapshots" / "report.txt"
     snapshot.parent.mkdir()
     snapshot.write_bytes(b"source")
@@ -588,6 +614,181 @@ raise SystemExit(done.returncode)
     assert (quality, warnings) == ("ready", [])
     assert (output / "report.txt" / "report.txt.md").is_file()
     assert CoreRunner().knowledge_unit_validate(output / "report.txt")["status"] == "ok"
+
+
+def test_workspace_both_provider_routes_omit_absent_config_and_publish_valid_units(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    (root / "ref" / "report.pdf").write_bytes(b"pdf source")
+    (root / "ref" / "memo.txt").write_bytes(b"text source")
+    provider = _configless_provider(tmp_path)
+    log = tmp_path / "provider.log"
+    monkeypatch.setenv("SYNTHETIC_PROVIDER_LOG", str(log))
+    for route in ("FILE", "MARKDOWN"):
+        monkeypatch.setenv(route + "_CONVERSION_RUNNER", str(provider.resolve()))
+        monkeypatch.delenv(route + "_CONVERSION_CONFIG", raising=False)
+
+    prepared = workspace.prepare(root)
+
+    assert prepared["data"]["action"] == "adopted"
+    assert log.read_text("utf-8").splitlines() == ["memo.txt", "report.pdf"]
+    manifest = _json(root / "agent-workbench" / "ref" / ".agent-workbench.json")
+    assert {
+        item["source_path"]: item["provider_route"] for item in manifest["items"]
+    } == {"memo.txt": "markdown-conversion", "report.pdf": "file-conversion"}
+    assert workspace.validate(root)["data"]["valid"] is True
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected_code"),
+    [
+        pytest.param("empty", "file_conversion_config_required", id="empty"),
+        pytest.param("relative", "file_conversion_config_not_absolute", id="relative"),
+        pytest.param("missing", "path_missing", id="missing"),
+        pytest.param("directory", "ordinary_file_required", id="directory"),
+        pytest.param("link", "linked_or_reparse_path", id="link"),
+        pytest.param("reparse-ancestor", "linked_or_reparse_path", id="reparse-ancestor"),
+    ],
+)
+def test_workspace_present_invalid_provider_config_fails_item_without_provider_or_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    configured: str,
+    expected_code: str,
+) -> None:
+    from cortex_collaborative_workspace.cli import main
+
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    (root / "ref" / "report.pdf").write_bytes(b"source")
+    before = _tree(root)
+    marker = tmp_path / "provider-called"
+    provider = tmp_path / "must-not-run.py"
+    provider.write_text(
+        "import os, pathlib\npathlib.Path(os.environ['PROVIDER_MARKER']).write_text('called')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PROVIDER_MARKER", str(marker))
+    monkeypatch.setenv("FILE_CONVERSION_RUNNER", str(provider.resolve()))
+    if configured == "empty":
+        raw = ""
+    elif configured == "relative":
+        raw = "provider-config.json"
+    elif configured == "missing":
+        raw = str(tmp_path / "missing-config.json")
+    elif configured == "directory":
+        directory = tmp_path / "config-directory"
+        directory.mkdir()
+        raw = str(directory.resolve())
+    elif configured == "link":
+        linked = tmp_path / "config-link.json"
+        linked.write_text("{}", encoding="utf-8")
+        raw = str(linked.absolute())
+        ordinary_lstat = Path.lstat
+
+        def linked_lstat(path: Path) -> os.stat_result:
+            info = ordinary_lstat(path)
+            if Path(path) == linked:
+                values = list(info)
+                values[0] = stat.S_IFLNK | stat.S_IMODE(info.st_mode)
+                return os.stat_result(values)
+            return info
+
+        monkeypatch.setattr(Path, "lstat", linked_lstat)
+    else:
+        parent = tmp_path / "reparse-parent"
+        parent.mkdir()
+        config = parent / "config.json"
+        config.write_text("{}", encoding="utf-8")
+        parent_info = parent.lstat()
+        parent_identity = (int(parent_info.st_dev), int(parent_info.st_ino))
+        ordinary_reparse = workspace._is_reparse
+        monkeypatch.setattr(
+            workspace,
+            "_is_reparse",
+            lambda info: ordinary_reparse(info)
+            or (int(info.st_dev), int(info.st_ino)) == parent_identity,
+        )
+        raw = str(config.resolve())
+    monkeypatch.setenv("FILE_CONVERSION_CONFIG", raw)
+
+    assert main(["--json", "prepare", "--root", str(root)]) == 3
+    value = json.loads(capsys.readouterr().out)
+    assert value["status"] == "validation_error"
+    assert value["exit_code"] == 3
+    assert value["data"] == {"failed_items": 1}
+    assert value["issues"] == [{
+        "code": expected_code,
+        "path": "report.pdf",
+        "provider_route": "file-conversion",
+    }]
+    assert not marker.exists()
+    assert _tree(root) == before
+    assert not any(
+        path.name.startswith(".cortex-collaborative-workspace-") for path in root.parent.iterdir()
+    )
+
+
+def test_workspace_provider_runner_remains_required_when_config_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from cortex_collaborative_workspace.cli import main
+
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    (root / "ref" / "report.pdf").write_bytes(b"source")
+    before = _tree(root)
+    monkeypatch.delenv("FILE_CONVERSION_RUNNER", raising=False)
+    monkeypatch.delenv("FILE_CONVERSION_CONFIG", raising=False)
+
+    assert main(["--json", "prepare", "--root", str(root)]) == 3
+    value = json.loads(capsys.readouterr().out)
+    assert value["issues"] == [{
+        "code": "file_conversion_runner_required",
+        "path": "report.pdf",
+        "provider_route": "file-conversion",
+    }]
+    assert _tree(root) == before
+    assert not any(
+        path.name.startswith(".cortex-collaborative-workspace-") for path in root.parent.iterdir()
+    )
+
+
+def test_workspace_mixed_route_executes_valid_item_but_failed_batch_does_not_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    from cortex_collaborative_workspace.cli import main
+
+    root = tmp_path / "workspace"
+    (root / "ref").mkdir(parents=True)
+    (root / "ref" / "broken.pdf").write_bytes(b"broken route")
+    (root / "ref" / "valid.txt").write_bytes(b"valid route")
+    before = _tree(root)
+    provider = _configless_provider(tmp_path)
+    log = tmp_path / "provider.log"
+    monkeypatch.setenv("SYNTHETIC_PROVIDER_LOG", str(log))
+    monkeypatch.setenv("FILE_CONVERSION_RUNNER", str(provider.resolve()))
+    monkeypatch.setenv("FILE_CONVERSION_CONFIG", "")
+    monkeypatch.setenv("MARKDOWN_CONVERSION_RUNNER", str(provider.resolve()))
+    monkeypatch.delenv("MARKDOWN_CONVERSION_CONFIG", raising=False)
+
+    assert main(["--json", "prepare", "--root", str(root)]) == 3
+    value = json.loads(capsys.readouterr().out)
+    assert value["status"] == "validation_error" and value["exit_code"] == 3
+    assert value["data"] == {"failed_items": 1}
+    assert value["issues"] == [{
+        "code": "file_conversion_config_required",
+        "path": "broken.pdf",
+        "provider_route": "file-conversion",
+    }]
+    assert log.read_text("utf-8").splitlines() == ["valid.txt"]
+    assert _tree(root) == before
+    assert not any(
+        path.name.startswith(".cortex-collaborative-workspace-") for path in root.parent.iterdir()
+    )
 
 
 @pytest.mark.parametrize(

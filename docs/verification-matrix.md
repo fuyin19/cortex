@@ -36,6 +36,7 @@ The scenario identifiers and scope below are the frozen acceptance baseline. The
 | workspace-sc002 | Canonical inventory preserves complete basenames, copies KUs byte-for-byte, rejects unsupported/control inputs together, and receives provider output only from task-owned snapshots. | `tests/test_collaborative_workspace.py` |
 | workspace-sc003 | Exact no-op is byte-identical; stale refresh replaces only prepared ref, preserves output, and refuses nonempty temp as busy. | `tests/test_collaborative_workspace.py` |
 | workspace-sc004 | The isolated skill wheel, launcher, manifest, closed CLI, router entry, and explicit-only metadata are deterministic and tamper-evident. | `tests/test_collaborative_workspace_runtime.py` |
+| workspace-sc005 | Each routed conversion requires its explicit runner; absent config omits `--config`, while every present config value is strictly validated before that provider can run, and any item failure prevents batch publication. | `tests/test_collaborative_workspace.py` |
 | sc-029 | The Chinese feasibility memo contains the frozen decision matrix, triggers, migration path, and no-central-runtime recommendation. | Candidate memo content/hash verification |
 | sc-030 | Disposable multi-repository fault/resume, pre-cleanup verification, and cleanup leave only intended deliverables. | Task-local closeout verification |
 

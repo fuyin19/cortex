@@ -36,7 +36,7 @@ def test_internal_adapters_are_private_complete_and_versioned() -> None:
     expected = {
         "kb": (("run_cortex.py", "run_cortex.cmd", "runtime-manifest.json"), "8.1.1"),
         "notes": (("run_notes.py", "run_notes.cmd", "runtime-manifest.json"), "2.1.0"),
-        "collaborative-workspace": (("run_collaborative_workspace.py", "run_collaborative_workspace.cmd", "runtime-manifest.json"), "1.1.2"),
+        "collaborative-workspace": (("run_collaborative_workspace.py", "run_collaborative_workspace.cmd", "runtime-manifest.json"), "1.1.3"),
     }
     for name, (files, version) in expected.items():
         adapter = ROOT / "skills/cortex/scripts" / name

@@ -22,7 +22,7 @@ from typing import Any, Iterator
 from .core_runner import CoreFailure, CoreRunner, INNER_CONTRACT, OUTER_CONTRACT
 
 
-VERSION = "1.1.2"
+VERSION = "1.1.3"
 RESULT_CODES = {"ok": 0, "usage_error": 2, "validation_error": 3, "busy": 5, "io_error": 6}
 OUTER_MANIFEST = "collaborative-workspace.json"
 INNER_MANIFEST = ".agent-workbench.json"
@@ -485,12 +485,14 @@ def _ordinary_absolute_file(raw: str | None, missing_code: str, relative_code: s
     return absolute
 
 
-def _provider_binding(route: str) -> tuple[Path, Path]:
+def _provider_binding(route: str) -> tuple[Path, Path | None]:
     runner_env, config_env = PROVIDER_BINDINGS[route]
     runner = _ordinary_absolute_file(os.environ.get(runner_env), runner_env.lower() + "_required",
                                      runner_env.lower() + "_not_absolute")
-    config = _ordinary_absolute_file(os.environ.get(config_env), config_env.lower() + "_required",
-                                     config_env.lower() + "_not_absolute")
+    config = None
+    if config_env in os.environ:
+        config = _ordinary_absolute_file(os.environ[config_env], config_env.lower() + "_required",
+                                         config_env.lower() + "_not_absolute")
     return runner, config
 
 
@@ -537,10 +539,13 @@ def _provider_stderr(raw: bytes) -> tuple[str, bool]:
 
 def _run_provider(route: str, snapshot: Path, output_parent: Path, expected_unit: Path, core_runner: Path) -> tuple[str, list[str]]:
     runner, config = _provider_binding(route)
-    command = [
-        sys.executable, "-I", str(runner), "--config", str(config), "--input", str(snapshot),
-        "--output-dir", str(output_parent), "--bundle-name-mode", "source-basename",
-    ]
+    command = [sys.executable, "-I", str(runner)]
+    if config is not None:
+        command.extend(("--config", str(config)))
+    command.extend((
+        "--input", str(snapshot), "--output-dir", str(output_parent),
+        "--bundle-name-mode", "source-basename",
+    ))
     child_env = dict(os.environ)
     child_env["ANTI_ENTROPY_CORE_RUNNER"] = str(core_runner)
     try:

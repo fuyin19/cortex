@@ -13,13 +13,13 @@ import zipfile
 ROOT = Path(__file__).parents[1]
 SKILL = ROOT / "skills" / "cortex" / "scripts" / "collaborative-workspace"
 RUNNER = SKILL / "run_collaborative_workspace.py"
-WHEEL = SKILL / "vendor" / "cortex_collaborative_workspace-1.1.2-py3-none-any.whl"
+WHEEL = SKILL / "vendor" / "cortex_collaborative_workspace-1.1.3-py3-none-any.whl"
 CORE_RUNNER = Path(os.environ["CORTEX_REAL_CORE_RUNNER"])
 PAYLOADS = (
     "run_collaborative_workspace.py",
     "run_collaborative_workspace.cmd",
     "runtime-manifest.json",
-    "vendor/cortex_collaborative_workspace-1.1.2-py3-none-any.whl",
+    "vendor/cortex_collaborative_workspace-1.1.3-py3-none-any.whl",
 )
 
 
@@ -54,13 +54,13 @@ def test_workspace_runtime_is_deterministic_closed_and_dependency_free() -> None
         "isolation": "-I",
         "python": "3.11",
         "schema_version": 1,
-        "version": "1.1.2",
+        "version": "1.1.3",
         "wheel": WHEEL.name,
         "wheel_sha256": hashlib.sha256(WHEEL.read_bytes()).hexdigest(),
     }
     with zipfile.ZipFile(WHEEL) as archive:
         names = archive.namelist()
-        metadata = archive.read("cortex_collaborative_workspace-1.1.2.dist-info/METADATA").decode("utf-8")
+        metadata = archive.read("cortex_collaborative_workspace-1.1.3.dist-info/METADATA").decode("utf-8")
     assert "Requires-Dist:" not in metadata and not any(name.endswith("entry_points.txt") for name in names)
     assert "cortex_collaborative_workspace/workspace.py" in names
     assert not (SKILL / "SKILL.md").exists()
@@ -68,7 +68,7 @@ def test_workspace_runtime_is_deterministic_closed_and_dependency_free() -> None
 
 def test_workspace_runtime_version_tamper_and_binding_fail_closed(tmp_path: Path) -> None:
     version = _run("--version")
-    assert version.returncode == 0 and version.stdout == "cortex-collaborative-workspace 1.1.2\n"
+    assert version.returncode == 0 and version.stdout == "cortex-collaborative-workspace 1.1.3\n"
     copied = tmp_path / "skill"
     shutil.copytree(SKILL, copied)
     wheel = copied / "vendor" / WHEEL.name
@@ -102,6 +102,14 @@ def test_workspace_surface_fixture_and_router_are_exact() -> None:
     ]
     assert fixture["skill"] == "cortex"
     assert fixture["adapter"] == "skills/cortex/scripts/collaborative-workspace"
+    assert fixture["conditional_provider_environment"] == {
+        "file-conversion": ["FILE_CONVERSION_RUNNER"],
+        "markdown-conversion": ["MARKDOWN_CONVERSION_RUNNER"],
+    }
+    assert fixture["optional_provider_environment"] == {
+        "file-conversion": ["FILE_CONVERSION_CONFIG"],
+        "markdown-conversion": ["MARKDOWN_CONVERSION_CONFIG"],
+    }
     router = (ROOT / "skills" / "cortex" / "SKILL.md").read_text("utf-8")
     assert "Collaborative Workspace" in router and "scripts/" in router
 
